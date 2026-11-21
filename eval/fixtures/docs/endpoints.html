@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WarpAPI Documentation — REST API Endpoints Specification</title>
+</head>
+<body>
+  <nav>
+    <a href="https://warpapi-docs.io/index.html">Getting Started</a>
+    <a href="https://warpapi-docs.io/authentication.html">Authentication</a>
+    <a href="https://warpapi-docs.io/endpoints.html">API Endpoints</a>
+    <a href="https://warpapi-docs.io/troubleshooting.html">Troubleshooting</a>
+  </nav>
+
+  <main>
+    <section id="search-endpoint">
+      <h2>POST /api/search — High-Speed Intent Search</h2>
+      <p>Submit natural-language visitor queries to receive ranked matching section nodes within 10 milliseconds. Accepts JSON payload containing site_id, query string, and optional top_k parameter. Returns an array of search results with deep links and anchor IDs.</p>
+      <div class="meta">Method: POST /api/search</div>
+      <a href="https://warpapi-docs.io/specs#search" class="btn">View Search Request Schema</a>
+    </section>
+
+    <section id="ingest-endpoint">
+      <h2>POST /api/ingest — Real-Time HTML Ingestion</h2>
+      <p>Ingests raw HTML markup, parses hierarchical DOM nodes, extracts action links, and indexes semantic sections into the site search engine. Supports incremental upserts using SHA-256 content change detection hashing.</p>
+      <div class="meta">Method: POST /api/ingest</div>
+      <a href="https://warpapi-docs.io/specs#ingest" class="btn">View Ingest Request Schema</a>
+    </section>
+
+    <section id="analytics-endpoint">
+      <h2>GET /api/analytics/{site_id} — Findability Telemetry</h2>
+      <p>Retrieves aggregate site search analytics including total query volume, zero-match lost queries, click-through rate (CTR), and visitor satisfaction feedback. Requires owner API key authentication.</p>
+      <div class="meta">Method: GET /api/analytics/{site_id}</div>
+    </section>
+  </main>
+</body>
+</html>

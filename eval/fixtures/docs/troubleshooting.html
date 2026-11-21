@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WarpAPI Documentation — Error Handling & Troubleshooting</title>
+</head>
+<body>
+  <nav>
+    <a href="https://warpapi-docs.io/index.html">Getting Started</a>
+    <a href="https://warpapi-docs.io/authentication.html">Authentication</a>
+    <a href="https://warpapi-docs.io/endpoints.html">API Endpoints</a>
+    <a href="https://warpapi-docs.io/troubleshooting.html">Troubleshooting</a>
+  </nav>
+
+  <main>
+    <section id="error-429-backoff">
+      <h2>Resolving HTTP 429 Too Many Requests</h2>
+      <p>If your client exceeds configured request throughput limits, the API returns a 429 status code. Implement exponential backoff with jitter in your network client. Inspect the Retry-After header to determine the required wait duration before retrying.</p>
+      <div class="meta">Code: 429 Too Many Requests</div>
+    </section>
+
+    <section id="timeout-handling">
+      <h2>Client Timeout Debugging & AbortController</h2>
+      <p>Search requests should complete under 100 milliseconds. If queries exceed 500ms, check network round-trip latency and ensure in-flight searches use AbortController signal cancellation when the user types subsequent keystrokes.</p>
+      <div class="meta">Code: Request Timeout</div>
+    </section>
+
+    <section id="missing-anchors">
+      <h2>Locator Fallback for Pages Missing Anchor IDs</h2>
+      <p>When target web sections lack native HTML id attributes, WarpAPI generates CSS DOM paths and W3C text fragment locators (#:~:text=...) so the browser can accurately highlight the landed paragraph upon arrival.</p>
+      <div class="meta">Fallback: W3C Text Fragments</div>
+    </section>
+  </main>
+</body>
+</html>

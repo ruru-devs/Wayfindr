@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WarpAPI Documentation — API Keys & Authentication Security</title>
+</head>
+<body>
+  <nav>
+    <a href="https://warpapi-docs.io/index.html">Getting Started</a>
+    <a href="https://warpapi-docs.io/authentication.html">Authentication</a>
+    <a href="https://warpapi-docs.io/endpoints.html">API Endpoints</a>
+    <a href="https://warpapi-docs.io/troubleshooting.html">Troubleshooting</a>
+  </nav>
+
+  <main>
+    <section id="api-key-auth">
+      <h2>HMAC SHA-256 API Key Authentication</h2>
+      <p>All administrative requests must include your secret API key either in the X-API-Key HTTP header or as a Bearer token in the Authorization header. Plaintext API keys are never stored on server disks; only cryptographic SHA-256 hashes are persisted.</p>
+      <div class="meta">Header: X-API-Key: ww_live_xxxxxxxx</div>
+      <a href="https://warpapi-docs.io/console/keys" class="btn">Generate New API Key</a>
+    </section>
+
+    <section id="tenant-isolation">
+      <h2>Tenant Isolation & Scoped Credentials</h2>
+      <p>Every site_id is cryptographically tied to its owner API key. A credential generated for site A cannot read, query, export, or mutate resources belonging to site B. Unauthorized cross-tenant calls are rejected with HTTP 403 Forbidden.</p>
+      <div class="meta">Status: 403 Forbidden on Mismatch</div>
+    </section>
+
+    <section id="rate-limiting">
+      <h2>Rate Limiting & Burst Allowances</h2>
+      <p>Public search APIs permit up to 60 requests per minute per IP address and 600 requests per minute per registered site. When limits are exceeded, the API responds with HTTP 429 Too Many Requests along with a Retry-After response header.</p>
+      <div class="meta">Limit: 60 req/min per IP</div>
+    </section>
+  </main>
+</body>
+</html>
