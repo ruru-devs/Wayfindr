@@ -29,6 +29,15 @@
       "run_at": "document_idle"
     }
   ],
+  "commands": {
+    "toggle-wayfindr": {
+      "suggested_key": {
+        "default": "Alt+K",
+        "mac": "Alt+K"
+      },
+      "description": "Toggle Wayfindr intent navigation palette"
+    }
+  },
   "action": {
     "default_popup": "src/popup/popup.html",
     "default_title": "Wayfindr Navigation"

@@ -215,14 +215,38 @@ function closePalette() {
   backdrop.classList.remove('open');
 }
 
-// Toggle on Ctrl+K or Cmd+K
-window.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-    e.preventDefault();
-    backdrop.classList.contains('open') ? closePalette() : openPalette();
+function togglePalette() {
+  backdrop.classList.contains('open') ? closePalette() : openPalette();
+}
+
+// 1. Listen for background command (Alt+K or configured in browser)
+chrome.runtime.onMessage.addListener((msg, sender, sendResp) => {
+  if (msg.action === 'TOGGLE_PALETTE') {
+    togglePalette();
+    sendResp({ status: 'OK' });
   }
-  if (e.key === 'Escape') closePalette();
+  return false;
 });
+
+// 2. Direct DOM key bindings (Capture phase to precede browser/page handlers)
+// Supports: Ctrl+K, Cmd+K, Alt+K, and Ctrl+Shift+K
+window.addEventListener('keydown', (e) => {
+  const isK = e.key.toLowerCase() === 'k';
+  const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+  const isAlt = e.altKey;
+  const isShift = e.shiftKey;
+
+  if (isK && (isAlt || isCtrlOrCmd || (isCtrlOrCmd && isShift))) {
+    e.preventDefault();
+    e.stopPropagation();
+    togglePalette();
+    return;
+  }
+  if (e.key === 'Escape' && backdrop.classList.contains('open')) {
+    e.preventDefault();
+    closePalette();
+  }
+}, true); // useCapture = true ensures Wayfindr intercepts the hotkey before native Firefox search focus
 
 backdrop.addEventListener('click', (e) => {
   if (e.target === backdrop) closePalette();

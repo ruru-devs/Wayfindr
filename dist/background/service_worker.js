@@ -67,44 +67,59 @@ async function crawlDomain(originUrl) {
     engine.index(allSections);
     siteIndices.set(domain, { engine, sections: allSections, timestamp: Date.now() });
     // Save to chrome.storage.local for fast cache
-    chrome.storage.local.set({
-        [`wayfindr_${domain}`]: {
-            sections: allSections,
-            timestamp: Date.now()
-        }
-    });
+    try {
+        await chrome.storage.local.set({
+            [`wayfindr_${domain}`]: {
+                sections: allSections,
+                timestamp: Date.now()
+            }
+        });
+    }
+    catch (err) {
+        console.warn('[Wayfindr] Failed to save index to storage:', err);
+    }
     return allSections;
 }
-// Listen for messages from content scripts
+// Unified message handler supporting both Chrome callback & Firefox Promise returns
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'PAGE_LOADED') {
         const url = message.url;
         try {
             const domain = new URL(url).hostname;
             if (isDomainAllowed(domain)) {
-                // Check in-memory index or crawl
                 if (!siteIndices.has(domain)) {
-                    // Check storage cache
                     chrome.storage.local.get([`wayfindr_${domain}`], (res) => {
-                        const cached = res[`wayfindr_${domain}`];
+                        const cached = res ? res[`wayfindr_${domain}`] : null;
                         if (cached && (Date.now() - cached.timestamp < 24 * 60 * 60 * 1000)) {
                             const engine = new ClientBM25Engine();
                             engine.index(cached.sections);
                             siteIndices.set(domain, { engine, sections: cached.sections, timestamp: cached.timestamp });
                             console.log(`[Wayfindr] Loaded ${domain} index from local cache (${cached.sections.length} sections)`);
+                            sendResponse({ status: 'CACHED', count: cached.sections.length });
                         }
                         else {
-                            crawlDomain(url);
+                            crawlDomain(url).then(sections => {
+                                sendResponse({ status: 'CRAWLED', count: sections.length });
+                            }).catch(err => {
+                                console.error('[Wayfindr] Crawl failed:', err);
+                                sendResponse({ status: 'ERROR', error: String(err) });
+                            });
                         }
                     });
+                    return true; // Keep channel open for async response
+                }
+                else {
+                    const site = siteIndices.get(domain);
+                    sendResponse({ status: 'READY', count: site?.sections.length || 0 });
+                    return false;
                 }
             }
         }
         catch (e) {
             console.error('[Wayfindr] Invalid URL in PAGE_LOADED:', e);
         }
-        sendResponse({ status: 'ACK' });
-        return true;
+        sendResponse({ status: 'IGNORED' });
+        return false;
     }
     if (message.action === 'SEARCH_QUERY') {
         const { query, url } = message;
@@ -112,22 +127,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const domain = new URL(url).hostname;
             const site = siteIndices.get(domain);
             if (!site) {
-                sendResponse({ results: [], status: 'INDEXING' });
-                return true;
+                // If not in memory, check storage before declaring indexing
+                chrome.storage.local.get([`wayfindr_${domain}`], (res) => {
+                    const cached = res ? res[`wayfindr_${domain}`] : null;
+                    if (cached && cached.sections) {
+                        const engine = new ClientBM25Engine();
+                        engine.index(cached.sections);
+                        siteIndices.set(domain, { engine, sections: cached.sections, timestamp: cached.timestamp });
+                        const results = engine.search(query, url, 6);
+                        sendResponse({ results, status: 'READY', indexedSectionsCount: cached.sections.length });
+                    }
+                    else {
+                        sendResponse({ results: [], status: 'INDEXING' });
+                    }
+                });
+                return true; // Keep channel open
             }
             const results = site.engine.search(query, url, 6);
             sendResponse({ results, status: 'READY', indexedSectionsCount: site.sections.length });
+            return false;
         }
         catch (err) {
             sendResponse({ results: [], status: 'ERROR' });
+            return false;
         }
-        return true;
     }
     if (message.action === 'TRIGGER_REINDEX') {
         const { url } = message;
         crawlDomain(url).then(sections => {
             sendResponse({ status: 'DONE', sectionsCount: sections.length });
+        }).catch(err => {
+            console.error('[Wayfindr] Re-index failed:', err);
+            sendResponse({ status: 'ERROR', error: String(err) });
         });
-        return true;
+        return true; // Keep channel open for async response
+    }
+    return false;
+});
+// Handle commands API (e.g. Alt+K configured in manifest.json)
+chrome.commands.onCommand.addListener((command) => {
+    if (command === 'toggle-wayfindr') {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs[0]?.id) {
+                chrome.tabs.sendMessage(tabs[0].id, { action: 'TOGGLE_PALETTE' }).catch(() => { });
+            }
+        });
     }
 });

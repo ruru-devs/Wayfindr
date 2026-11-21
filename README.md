@@ -78,7 +78,7 @@ flowchart TD
 ## 🎮 How to Use
 
 1. Open any content, business, clinic, university, or e-commerce website (e.g., our test hospital site at `http://localhost:3000/demo/apexcare/index.html` or audio store at `http://localhost:3000/demo/shoppulse/index.html`).
-2. Press **`Ctrl+K`** (or **`Cmd+K`** on Mac).
+2. Press **`Alt+K`** or **`Ctrl+K`** (or **`Ctrl+Shift+K`** / **`Cmd+K`** on Mac).
 3. Type what you want to find:
    - *"dr sharma timings"*
    - *"mri scan price"*

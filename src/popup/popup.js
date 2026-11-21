@@ -24,8 +24,14 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       reindexBtn.addEventListener('click', () => {
         reindexBtn.innerText = 'Crawling...';
         chrome.runtime.sendMessage({ action: 'TRIGGER_REINDEX', url: currentTab.url }, (resp) => {
-          reindexBtn.innerText = 'Indexed!';
-          setTimeout(() => window.close(), 800);
+          if (resp && resp.status === 'DONE') {
+            reindexBtn.innerText = `✓ Indexed (${resp.sectionsCount} items)`;
+            const countEl = document.getElementById('pageCount');
+            if (countEl) countEl.innerText = `✓ ${resp.sectionsCount} sections indexed`;
+          } else {
+            reindexBtn.innerText = 'Error crawling';
+          }
+          setTimeout(() => window.close(), 1200);
         });
       });
     }

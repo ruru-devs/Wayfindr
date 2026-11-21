@@ -35,22 +35,30 @@ export function extractSectionsFromHtml(
 
   let idx = 0;
   for (const block of candidates) {
-    const text = block.innerText?.trim() || block.textContent?.trim() || '';
+    // Firefox XML/DOM documents can return undefined for innerText; textContent is standard
+    const text = (block.textContent || '').trim().replace(/\s+/g, ' ');
     if (text.length < 25) continue;
 
     const heading = block.querySelector('h1, h2, h3, h4, h5');
-    let title = heading?.textContent?.trim() || '';
+    let title = (heading?.textContent || '').trim();
     if (!title) {
       const strong = block.querySelector('strong, b');
-      title = strong?.textContent?.trim() || text.split(/\s+/).slice(0, 6).join(' ');
+      title = (strong?.textContent || '').trim() || text.split(/\s+/).slice(0, 6).join(' ');
     }
 
     const anchorId = block.id || heading?.id || '';
 
     // Action button detection
     const actionEl = block.querySelector('a, button');
-    let actionLabel = actionEl?.textContent?.trim();
-    let actionUrl = (actionEl as HTMLAnchorElement)?.href || undefined;
+    let actionLabel = (actionEl?.textContent || '').trim();
+    let actionUrl = actionEl?.getAttribute('href') || undefined;
+    if (actionUrl && !actionUrl.startsWith('http') && !actionUrl.startsWith('#')) {
+      try {
+        actionUrl = new URL(actionUrl, pageUrl).href;
+      } catch {
+        // Keep as-is
+      }
+    }
 
     // Metadata extraction
     const priceMatch = text.match(/(?:₹|\$|USD|INR|Rs\.?)\s*([\d,]+(?:\.\d+)?)/i);
