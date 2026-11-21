@@ -1,6 +1,6 @@
 import { SearchResultItem } from '../engine/types';
 import { extractSectionsFromDoc } from '../engine/sectionizer';
-import { isSafeNavigationUrl } from '../engine/url_utils';
+import { isSafeNavigationUrl, isSensitiveUrl } from '../engine/url_utils';
 
 /**
  * Content Script:
@@ -62,6 +62,24 @@ async function isDomainEnabled(): Promise<boolean> {
   }
 }
 
+function isSensitivePage(doc: Document): boolean {
+  // 1. Check if current URL path or search matches sensitive patterns
+  if (isSensitiveUrl(window.location.href)) {
+    return true;
+  }
+
+  // 2. Check for password fields or sensitive credit card inputs
+  try {
+    const passwordInput = doc.querySelector('input[type="password"]');
+    if (passwordInput) return true;
+
+    const sensitiveInputs = doc.querySelectorAll('input[autocomplete*="password"], input[autocomplete*="cc-number"], input[autocomplete*="credit-card"]');
+    if (sensitiveInputs.length > 0) return true;
+  } catch {}
+
+  return false;
+}
+
 // Initialize on page load: Extract live DOM sections directly from active tab
 checkAndHighlightTarget();
 
@@ -69,6 +87,11 @@ async function extractAndSendLiveDOM() {
   try {
     const enabled = await isDomainEnabled();
     if (!enabled) return;
+
+    if (isSensitivePage(document)) {
+      console.log('[Wayfindr Privacy] Sensitive page/form detected. Skipping indexing for privacy.');
+      return;
+    }
 
     const liveSections = extractSectionsFromDoc(document, window.location.href, document.title);
     chrome.runtime.sendMessage({

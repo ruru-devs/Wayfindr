@@ -1,8 +1,46 @@
 (() => {
   // src/engine/url_utils.ts
+  var SENSITIVE_PATH_PATTERNS = [
+    // Auth & Account
+    /\b(?:login|signin|sign-in|signup|sign-up|register|logout|auth|oauth|sso|saml)\b/i,
+    /\b(?:password|passwd|reset-password|forgot-password|change-password)\b/i,
+    /\b(?:account|my-account|profile|settings|security|user-profile)\b/i,
+    // Banking & Financial & Payments
+    /\b(?:checkout|cart|basket|billing|payment|pay|invoice|receipt)\b/i,
+    /\b(?:bank|banking|wallet|fund|transfer|tax|salary|payroll)\b/i,
+    // Administrative & Portals
+    /\b(?:admin|administrator|moderator|dashboard|portal|cpanel|wp-admin)\b/i
+  ];
+  var SENSITIVE_QUERY_PATTERNS = [
+    /(?:token|auth_token|access_token|refresh_token|api_key|secret|password|passwd|session|session_id|jwt|cvv|ccv|credit_card)=/i
+  ];
+  function isSensitiveUrl(url) {
+    if (!url || typeof url !== "string") return false;
+    try {
+      const parsed = new URL(url, "http://localhost");
+      const path = parsed.pathname.toLowerCase();
+      const search = parsed.search.toLowerCase();
+      for (const pattern of SENSITIVE_PATH_PATTERNS) {
+        if (pattern.test(path)) {
+          return true;
+        }
+      }
+      for (const pattern of SENSITIVE_QUERY_PATTERNS) {
+        if (pattern.test(search)) {
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
   function isValidCrawlUrl(candidateUrl, targetDomain, allowSubdomains = true) {
     if (!candidateUrl || typeof candidateUrl !== "string") return false;
     if (!targetDomain || typeof targetDomain !== "string") return false;
+    if (isSensitiveUrl(candidateUrl)) {
+      return false;
+    }
     try {
       const parsed = new URL(candidateUrl);
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
@@ -766,11 +804,44 @@
     "twitter.com",
     "x.com",
     "instagram.com",
-    "reddit.com"
+    "reddit.com",
+    "tiktok.com",
+    // Banking & Payment portals
+    "chase.com",
+    "bankofamerica.com",
+    "wellsfargo.com",
+    "citigroup.com",
+    "paypal.com",
+    "stripe.com",
+    "coinbase.com",
+    // Auth & Identity
+    "1password.com",
+    "lastpass.com",
+    "bitwarden.com",
+    "okta.com"
   ];
+  var userExcludedDomains = /* @__PURE__ */ new Set();
+  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+    chrome.storage.local.get(["wayfindr_excluded_domains"], (res) => {
+      if (Array.isArray(res?.wayfindr_excluded_domains)) {
+        userExcludedDomains = new Set(res.wayfindr_excluded_domains.map((d) => d.toLowerCase()));
+      }
+    });
+    if (chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === "local" && changes.wayfindr_excluded_domains) {
+          const list = changes.wayfindr_excluded_domains.newValue;
+          if (Array.isArray(list)) {
+            userExcludedDomains = new Set(list.map((d) => d.toLowerCase()));
+          }
+        }
+      });
+    }
+  }
   var coordinator = new IndexerCoordinator(DEFAULT_CRAWL_CONFIG);
   function isDomainAllowed(domain) {
     const clean = domain.toLowerCase();
+    if (userExcludedDomains.has(clean)) return false;
     return !BLOCKED_DOMAINS.some((b) => clean === b || clean.endsWith(`.${b}`));
   }
   async function discoverSeedUrls(originUrl, domain, signal) {

@@ -9,19 +9,46 @@ import {
   IndexState
 } from './indexer_coordinator';
 
-// Domains to ignore (search engines, video feeds, social networks)
+// Domains to ignore (search engines, video feeds, social networks, and sensitive banking/auth portals)
 const BLOCKED_DOMAINS = [
   'google.com', 'www.google.com',
   'bing.com', 'www.bing.com',
   'duckduckgo.com',
   'youtube.com', 'www.youtube.com',
-  'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'reddit.com'
+  'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'reddit.com', 'tiktok.com',
+  // Banking & Payment portals
+  'chase.com', 'bankofamerica.com', 'wellsfargo.com', 'citigroup.com',
+  'paypal.com', 'stripe.com', 'coinbase.com',
+  // Auth & Identity
+  '1password.com', 'lastpass.com', 'bitwarden.com', 'okta.com'
 ];
+
+let userExcludedDomains = new Set<string>();
+
+if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+  chrome.storage.local.get(['wayfindr_excluded_domains'], (res) => {
+    if (Array.isArray(res?.wayfindr_excluded_domains)) {
+      userExcludedDomains = new Set(res.wayfindr_excluded_domains.map((d: string) => d.toLowerCase()));
+    }
+  });
+
+  if (chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes.wayfindr_excluded_domains) {
+        const list = changes.wayfindr_excluded_domains.newValue;
+        if (Array.isArray(list)) {
+          userExcludedDomains = new Set(list.map((d: string) => d.toLowerCase()));
+        }
+      }
+    });
+  }
+}
 
 export const coordinator = new IndexerCoordinator(DEFAULT_CRAWL_CONFIG);
 
 function isDomainAllowed(domain: string): boolean {
   const clean = domain.toLowerCase();
+  if (userExcludedDomains.has(clean)) return false;
   return !BLOCKED_DOMAINS.some(b => clean === b || clean.endsWith(`.${b}`));
 }
 

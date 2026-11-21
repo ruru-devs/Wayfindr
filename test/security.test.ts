@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { JSDOM } from 'jsdom';
-import { isValidCrawlUrl, isSafeNavigationUrl } from '../src/engine/url_utils';
+import { isValidCrawlUrl, isSafeNavigationUrl, isSensitiveUrl } from '../src/engine/url_utils';
 import { SearchResultItem } from '../src/engine/types';
 
 describe('Phase 0: URL & Domain Validation Security', () => {
@@ -119,3 +119,54 @@ describe('Phase 0: XSS and HTML Injection Defense', () => {
     assert.ok(container.innerHTML.includes('&lt;img src=x onerror="alert(\'xss_title\')"&gt;'));
   });
 });
+
+describe('Phase 4: Privacy & Sensitive URL/Data Protection', () => {
+  it('detects and blocks crawling on authentication and account URLs', () => {
+    assert.strictEqual(isSensitiveUrl('https://example.com/login'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/signin'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/user/signup'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/auth/oauth/callback'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/reset-password?id=123'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/my-account/profile'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/cpanel'), true);
+  });
+
+  it('detects and blocks crawling on banking, payment, and checkout URLs', () => {
+    assert.strictEqual(isSensitiveUrl('https://example.com/checkout/step2'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/cart'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/billing/payment'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/online-banking/transfer'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/admin/dashboard'), true);
+  });
+
+  it('detects queries containing sensitive tokens, secrets, or passwords', () => {
+    assert.strictEqual(isSensitiveUrl('https://example.com/api/data?token=secret123'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/verify?session_id=abc987'), true);
+    assert.strictEqual(isSensitiveUrl('https://example.com/page?api_key=key_test_99'), true);
+  });
+
+  it('permits benign public content URLs', () => {
+    assert.strictEqual(isSensitiveUrl('https://example.com/docs/getting-started'), false);
+    assert.strictEqual(isSensitiveUrl('https://example.com/pricing'), false);
+    assert.strictEqual(isSensitiveUrl('https://example.com/products/wireless-headphones'), false);
+    assert.strictEqual(isSensitiveUrl('https://example.com/doctors/dr-sharma'), false);
+  });
+
+  it('isValidCrawlUrl rejects sensitive URLs automatically', () => {
+    assert.strictEqual(isValidCrawlUrl('https://example.com/login', 'example.com'), false);
+    assert.strictEqual(isValidCrawlUrl('https://example.com/checkout', 'example.com'), false);
+    assert.strictEqual(isValidCrawlUrl('https://example.com/billing', 'example.com'), false);
+    assert.strictEqual(isValidCrawlUrl('https://example.com/products', 'example.com'), true);
+  });
+
+  it('detects password input fields in DOM to protect authenticated user pages', () => {
+    const dom = new JSDOM('<!DOCTYPE html><html><body><form><input type="password" id="pwd"/></form></body></html>');
+    const hasPassword = !!dom.window.document.querySelector('input[type="password"]');
+    assert.strictEqual(hasPassword, true);
+
+    const safeDom = new JSDOM('<!DOCTYPE html><html><body><h1>Public Article</h1></body></html>');
+    const safeHasPassword = !!safeDom.window.document.querySelector('input[type="password"]');
+    assert.strictEqual(safeHasPassword, false);
+  });
+});
+

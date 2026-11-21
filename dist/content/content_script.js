@@ -1,5 +1,40 @@
 (() => {
   // src/engine/url_utils.ts
+  var SENSITIVE_PATH_PATTERNS = [
+    // Auth & Account
+    /\b(?:login|signin|sign-in|signup|sign-up|register|logout|auth|oauth|sso|saml)\b/i,
+    /\b(?:password|passwd|reset-password|forgot-password|change-password)\b/i,
+    /\b(?:account|my-account|profile|settings|security|user-profile)\b/i,
+    // Banking & Financial & Payments
+    /\b(?:checkout|cart|basket|billing|payment|pay|invoice|receipt)\b/i,
+    /\b(?:bank|banking|wallet|fund|transfer|tax|salary|payroll)\b/i,
+    // Administrative & Portals
+    /\b(?:admin|administrator|moderator|dashboard|portal|cpanel|wp-admin)\b/i
+  ];
+  var SENSITIVE_QUERY_PATTERNS = [
+    /(?:token|auth_token|access_token|refresh_token|api_key|secret|password|passwd|session|session_id|jwt|cvv|ccv|credit_card)=/i
+  ];
+  function isSensitiveUrl(url) {
+    if (!url || typeof url !== "string") return false;
+    try {
+      const parsed = new URL(url, "http://localhost");
+      const path = parsed.pathname.toLowerCase();
+      const search = parsed.search.toLowerCase();
+      for (const pattern of SENSITIVE_PATH_PATTERNS) {
+        if (pattern.test(path)) {
+          return true;
+        }
+      }
+      for (const pattern of SENSITIVE_QUERY_PATTERNS) {
+        if (pattern.test(search)) {
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
   function isSafeNavigationUrl(url, baseUrl) {
     if (!url || typeof url !== "string") return false;
     try {
@@ -222,11 +257,28 @@
       return true;
     }
   }
+  function isSensitivePage(doc) {
+    if (isSensitiveUrl(window.location.href)) {
+      return true;
+    }
+    try {
+      const passwordInput = doc.querySelector('input[type="password"]');
+      if (passwordInput) return true;
+      const sensitiveInputs = doc.querySelectorAll('input[autocomplete*="password"], input[autocomplete*="cc-number"], input[autocomplete*="credit-card"]');
+      if (sensitiveInputs.length > 0) return true;
+    } catch {
+    }
+    return false;
+  }
   checkAndHighlightTarget();
   async function extractAndSendLiveDOM() {
     try {
       const enabled = await isDomainEnabled();
       if (!enabled) return;
+      if (isSensitivePage(document)) {
+        console.log("[Wayfindr Privacy] Sensitive page/form detected. Skipping indexing for privacy.");
+        return;
+      }
       const liveSections = extractSectionsFromDoc(document, window.location.href, document.title);
       chrome.runtime.sendMessage({
         action: "PAGE_LOADED",
