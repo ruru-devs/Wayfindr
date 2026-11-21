@@ -1,26 +1,20 @@
-/**
- * Content Script:
- * 1. Notifies background worker on page load to initiate background crawl.
- * 2. Injects isolated Shadow DOM search palette on Ctrl+K.
- * 3. Handles cross-page landing highlights with smooth scrolling & pulsing animation.
- */
-// Highlight target element on cross-page landing
-function checkAndHighlightTarget() {
-    const hash = window.location.hash ? window.location.hash.substring(1) : '';
+(() => {
+  // src/content/content_script.ts
+  function checkAndHighlightTarget() {
+    const hash = window.location.hash ? window.location.hash.substring(1) : "";
     if (hash) {
-        setTimeout(() => {
-            const el = document.getElementById(hash) || document.querySelector(`[name="${hash}"]`);
-            if (el) {
-                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                el.classList.add('wayfindr-pulse-target');
-            }
-        }, 350);
+      setTimeout(() => {
+        const el = document.getElementById(hash) || document.querySelector(`[name="${hash}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("wayfindr-pulse-target");
+        }
+      }, 350);
     }
-}
-// Global styles for highlight animation
-const styleTag = document.createElement('style');
-styleTag.id = 'wayfindr-global-styles';
-styleTag.textContent = `
+  }
+  var styleTag = document.createElement("style");
+  styleTag.id = "wayfindr-global-styles";
+  styleTag.textContent = `
   @keyframes wayfindrGlow {
     0% { outline: 4px solid #38bdf8; background-color: rgba(56, 189, 248, 0.28); }
     50% { outline: 6px solid #0284c7; background-color: rgba(2, 132, 199, 0.38); }
@@ -31,17 +25,15 @@ styleTag.textContent = `
     scroll-margin-top: 100px !important;
   }
 `;
-document.head.appendChild(styleTag);
-// Initialize on page load
-checkAndHighlightTarget();
-chrome.runtime.sendMessage({ action: 'PAGE_LOADED', url: window.location.href });
-// Shadow DOM Overlay for Ctrl+K
-const host = document.createElement('div');
-host.id = 'wayfindr-extension-root';
-const shadow = host.attachShadow({ mode: 'open' });
-document.documentElement.appendChild(host);
-const shadowStyle = document.createElement('style');
-shadowStyle.textContent = `
+  document.head.appendChild(styleTag);
+  checkAndHighlightTarget();
+  chrome.runtime.sendMessage({ action: "PAGE_LOADED", url: window.location.href });
+  var host = document.createElement("div");
+  host.id = "wayfindr-extension-root";
+  var shadow = host.attachShadow({ mode: "open" });
+  document.documentElement.appendChild(host);
+  var shadowStyle = document.createElement("style");
+  shadowStyle.textContent = `
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
   .backdrop {
     position: fixed;
@@ -170,10 +162,10 @@ shadowStyle.textContent = `
     background: #fafafa;
   }
 `;
-shadow.appendChild(shadowStyle);
-const backdrop = document.createElement('div');
-backdrop.className = 'backdrop';
-backdrop.innerHTML = `
+  shadow.appendChild(shadowStyle);
+  var backdrop = document.createElement("div");
+  backdrop.className = "backdrop";
+  backdrop.innerHTML = `
   <div class="modal">
     <div class="search-bar">
       <svg width="18" height="18" fill="none" stroke="#64748b" stroke-width="2" viewBox="0 0 24 24">
@@ -188,110 +180,105 @@ backdrop.innerHTML = `
       </div>
     </div>
     <div class="footer">
-      <span>⚡ <strong>Wayfindr</strong> Extension Engine</span>
+      <span>\u26A1 <strong>Wayfindr</strong> Extension Engine</span>
       <span>Sub-10ms Cross-Page Jump</span>
     </div>
   </div>
 `;
-shadow.appendChild(backdrop);
-const searchInput = backdrop.querySelector('.search-input');
-const resultsContainer = backdrop.querySelector('.results');
-function openPalette() {
-    backdrop.classList.add('open');
+  shadow.appendChild(backdrop);
+  var searchInput = backdrop.querySelector(".search-input");
+  var resultsContainer = backdrop.querySelector(".results");
+  function openPalette() {
+    backdrop.classList.add("open");
     searchInput.focus();
-}
-function closePalette() {
-    backdrop.classList.remove('open');
-}
-function togglePalette() {
-    backdrop.classList.contains('open') ? closePalette() : openPalette();
-}
-// 1. Listen for background command (Alt+K or configured in browser)
-chrome.runtime.onMessage.addListener((msg, sender, sendResp) => {
-    if (msg.action === 'TOGGLE_PALETTE') {
-        togglePalette();
-        sendResp({ status: 'OK' });
+  }
+  function closePalette() {
+    backdrop.classList.remove("open");
+  }
+  function togglePalette() {
+    backdrop.classList.contains("open") ? closePalette() : openPalette();
+  }
+  chrome.runtime.onMessage.addListener((msg, sender, sendResp) => {
+    if (msg.action === "TOGGLE_PALETTE") {
+      togglePalette();
+      sendResp({ status: "OK" });
     }
     return false;
-});
-// 2. Direct DOM key bindings (Capture phase to precede browser/page handlers)
-// Supports: Ctrl+K, Cmd+K, Alt+K, and Ctrl+Shift+K
-window.addEventListener('keydown', (e) => {
-    const isK = e.key.toLowerCase() === 'k';
-    const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+  });
+  window.addEventListener("keydown", (e) => {
+    const isK = e.key.toLowerCase() === "k" || e.code === "KeyK";
     const isAlt = e.altKey;
-    const isShift = e.shiftKey;
-    if (isK && (isAlt || isCtrlOrCmd || (isCtrlOrCmd && isShift))) {
-        e.preventDefault();
-        e.stopPropagation();
-        togglePalette();
-        return;
+    const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+    if (isK && (isAlt || isCtrlOrCmd)) {
+      e.preventDefault();
+      e.stopPropagation();
+      togglePalette();
+      return;
     }
-    if (e.key === 'Escape' && backdrop.classList.contains('open')) {
-        e.preventDefault();
-        closePalette();
+    if (e.key === "Escape" && backdrop.classList.contains("open")) {
+      e.preventDefault();
+      closePalette();
     }
-}, true); // useCapture = true ensures Wayfindr intercepts the hotkey before native Firefox search focus
-backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop)
-        closePalette();
-});
-let debounce = null;
-searchInput.addEventListener('input', () => {
+  }, true);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closePalette();
+  });
+  var debounce = null;
+  searchInput.addEventListener("input", () => {
     clearTimeout(debounce);
     const q = searchInput.value.trim();
     if (!q) {
-        resultsContainer.innerHTML = `
+      resultsContainer.innerHTML = `
       <div style="padding: 16px; text-align: center; color: #94a3b8; font-size: 13px;">
         Type an instruction or intent to instantly cross-navigate this website...
       </div>
     `;
-        return;
+      return;
     }
     debounce = setTimeout(() => {
-        chrome.runtime.sendMessage({ action: 'SEARCH_QUERY', query: q, url: window.location.href }, (resp) => {
-            renderResults(resp?.results || []);
-        });
+      chrome.runtime.sendMessage({ action: "SEARCH_QUERY", query: q, url: window.location.href }, (resp) => {
+        renderResults(resp?.results || []);
+      });
     }, 100);
-});
-function renderResults(results) {
-    resultsContainer.innerHTML = '';
+  });
+  function renderResults(results) {
+    resultsContainer.innerHTML = "";
     if (!results.length) {
-        resultsContainer.innerHTML = `
+      resultsContainer.innerHTML = `
       <div style="padding: 24px; text-align: center; color: #64748b; font-size: 13.5px;">
         No destination matching your search was found across this website.
       </div>
     `;
-        return;
+      return;
     }
-    results.forEach(res => {
-        const el = document.createElement('div');
-        el.className = 'item';
-        el.innerHTML = `
+    results.forEach((res) => {
+      const el = document.createElement("div");
+      el.className = "item";
+      el.innerHTML = `
       <div class="item-main">
-        <div class="item-page">${res.isCurrentPage ? 'Current Page' : 'Cross-Page Link'} › ${res.pageTitle}</div>
+        <div class="item-page">${res.isCurrentPage ? "Current Page" : "Cross-Page Link"} \u203A ${res.pageTitle}</div>
         <div class="item-title">${res.title}</div>
         <div class="item-snippet">${res.snippet}</div>
-        ${res.metadata?.price ? `<div class="item-meta">💰 ${res.metadata.price}</div>` : ''}
-        ${res.metadata?.timings ? `<div class="item-meta">🕒 ${res.metadata.timings}</div>` : ''}
+        ${res.metadata?.price ? `<div class="item-meta">\u{1F4B0} ${res.metadata.price}</div>` : ""}
+        ${res.metadata?.timings ? `<div class="item-meta">\u{1F552} ${res.metadata.timings}</div>` : ""}
       </div>
-      <div class="action-badge">${res.isCurrentPage ? 'Jump' : 'Navigate'}</div>
+      <div class="action-badge">${res.isCurrentPage ? "Jump" : "Navigate"}</div>
     `;
-        el.addEventListener('click', () => {
-            closePalette();
-            if (res.isCurrentPage && res.anchorId) {
-                const target = document.getElementById(res.anchorId);
-                if (target) {
-                    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    target.classList.remove('wayfindr-pulse-target');
-                    void target.offsetWidth;
-                    target.classList.add('wayfindr-pulse-target');
-                    return;
-                }
-            }
-            window.location.href = res.targetUrl;
-        });
-        resultsContainer.appendChild(el);
+      el.addEventListener("click", () => {
+        closePalette();
+        if (res.isCurrentPage && res.anchorId) {
+          const target = document.getElementById(res.anchorId);
+          if (target) {
+            target.scrollIntoView({ behavior: "smooth", block: "center" });
+            target.classList.remove("wayfindr-pulse-target");
+            void target.offsetWidth;
+            target.classList.add("wayfindr-pulse-target");
+            return;
+          }
+        }
+        window.location.href = res.targetUrl;
+      });
+      resultsContainer.appendChild(el);
     });
-}
-export {};
+  }
+})();

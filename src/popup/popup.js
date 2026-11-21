@@ -19,6 +19,14 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       }
     });
 
+    const openPaletteBtn = document.getElementById('openPaletteBtn');
+    if (openPaletteBtn) {
+      openPaletteBtn.addEventListener('click', () => {
+        chrome.tabs.sendMessage(currentTab.id, { action: 'TOGGLE_PALETTE' }).catch(() => {});
+        window.close();
+      });
+    }
+
     const reindexBtn = document.getElementById('reindexBtn');
     if (reindexBtn) {
       reindexBtn.addEventListener('click', () => {

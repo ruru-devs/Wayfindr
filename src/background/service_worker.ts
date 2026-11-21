@@ -11,7 +11,7 @@ const BLOCKED_DOMAINS = [
   'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'reddit.com'
 ];
 
-const MAX_PAGES_TO_CRAWL = 12; // High-efficiency crawl budget
+const MAX_PAGES_TO_CRAWL = 80; // High-capacity crawl budget
 
 const siteIndices = new Map<string, { engine: ClientBM25Engine; sections: SectionNode[]; timestamp: number }>();
 
@@ -20,9 +20,56 @@ function isDomainAllowed(domain: string): boolean {
 }
 
 /**
+ * Attempts to discover URLs from /sitemap.xml and /llms.txt before blind crawling
+ */
+async function discoverSeedUrls(originUrl: string, domain: string): Promise<string[]> {
+  const seeds: string[] = [];
+  const baseOrigin = new URL(originUrl).origin;
+
+  // 1. Try llms.txt (LLM/Agent discovery standard)
+  try {
+    const llmResp = await fetch(`${baseOrigin}/llms.txt`, { method: 'GET', cache: 'force-cache' });
+    if (llmResp.ok) {
+      const text = await llmResp.text();
+      const lines = text.split('\n');
+      for (const line of lines) {
+        const match = line.match(/https?:\/\/[^\s\)]+/);
+        if (match && match[0].includes(domain)) {
+          seeds.push(match[0]);
+        }
+      }
+      if (seeds.length > 0) {
+        console.log(`[Wayfindr] Discovered ${seeds.length} high-value URLs via /llms.txt`);
+      }
+    }
+  } catch {}
+
+  // 2. Try sitemap.xml
+  try {
+    const sitemapResp = await fetch(`${baseOrigin}/sitemap.xml`, { method: 'GET', cache: 'force-cache' });
+    if (sitemapResp.ok) {
+      const xml = await sitemapResp.text();
+      const locMatches = xml.match(/<loc>(https?:\/\/[^<]+)<\/loc>/g);
+      if (locMatches) {
+        for (const locTag of locMatches) {
+          const locUrl = locTag.replace(/<\/?loc>/g, '').trim();
+          if (locUrl.includes(domain) && !locUrl.endsWith('.xml')) {
+            seeds.push(locUrl);
+          }
+        }
+        console.log(`[Wayfindr] Discovered ${locMatches.length} URLs via /sitemap.xml`);
+      }
+    }
+  } catch {}
+
+  return Array.from(new Set(seeds));
+}
+
+/**
  * Background Crawler Engine:
- * Fetches internal subpages using extension permissions (bypassing CORS),
- * extracts semantic sections, and builds BM25 index in memory.
+ * - Adapts depth: Depth 2 if at homepage/root (indexes all root links + their children), Depth 1 otherwise.
+ * - Up to 80 pages crawled with link ranking and prioritization.
+ * - Parses /sitemap.xml, /llms.txt, and schema.org JSON-LD data.
  */
 async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
   const urlObj = new URL(originUrl);
@@ -33,15 +80,37 @@ async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
     return [];
   }
 
-  console.log(`[Wayfindr] Starting background crawl for: ${domain}`);
+  // Check if we are at the homepage/root
+  const isHomepage = urlObj.pathname === '/' || urlObj.pathname === '' || urlObj.pathname === '/index.html';
+  const maxDepth = isHomepage ? 2 : 1;
+
+  console.log(`[Wayfindr] Starting background crawl for: ${domain} (Homepage: ${isHomepage}, MaxDepth: ${maxDepth}, Budget: ${MAX_PAGES_TO_CRAWL})`);
 
   const visitedUrls = new Set<string>();
-  const queue: string[] = [originUrl.split('#')[0]];
+  // Queue stores: { url, depth, score }
+  const queue: { url: string; depth: number; score: number }[] = [];
+
+  const originClean = originUrl.split('#')[0].replace(/\/$/, '');
+  queue.push({ url: originClean, depth: 0, score: 999 });
+
+  // Add sitemap/llms.txt discovery seeds at depth 1
+  try {
+    const seedUrls = await discoverSeedUrls(originUrl, domain);
+    for (const seed of seedUrls.slice(0, 30)) {
+      if (seed !== originClean) {
+        queue.push({ url: seed.replace(/\/$/, ''), depth: 1, score: 85 });
+      }
+    }
+  } catch {}
+
   const allSections: SectionNode[] = [];
 
-  // Crawl up to MAX_PAGES_TO_CRAWL
   while (queue.length > 0 && visitedUrls.size < MAX_PAGES_TO_CRAWL) {
-    const currentUrl = queue.shift()!;
+    // Sort queue by priority score descending
+    queue.sort((a, b) => b.score - a.score);
+    const item = queue.shift()!;
+    const currentUrl = item.url;
+
     if (visitedUrls.has(currentUrl)) continue;
     visitedUrls.add(currentUrl);
 
@@ -60,11 +129,17 @@ async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
       const pageSections = extractSectionsFromHtml(html, currentUrl, domain);
       allSections.push(...pageSections);
 
-      // Extract new internal links to queue
-      const discoveredLinks = extractValidInternalLinks(html, currentUrl, domain);
-      for (const link of discoveredLinks) {
-        if (!visitedUrls.has(link) && !queue.includes(link)) {
-          queue.push(link);
+      // Only discover deeper links if within depth limit
+      if (item.depth < maxDepth) {
+        const discoveredLinks = extractValidInternalLinks(html, currentUrl, domain);
+        for (const linkObj of discoveredLinks) {
+          if (!visitedUrls.has(linkObj.url) && !queue.some(q => q.url === linkObj.url)) {
+            queue.push({
+              url: linkObj.url,
+              depth: item.depth + 1,
+              score: linkObj.score
+            });
+          }
         }
       }
     } catch (err) {

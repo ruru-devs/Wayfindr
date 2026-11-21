@@ -81,25 +81,93 @@ export function extractSectionsFromHtml(
     });
   }
 
+  // Schema.org Structured Data (JSON-LD) extraction
+  try {
+    const jsonLdScripts = doc.querySelectorAll('script[type="application/ld+json"]');
+    jsonLdScripts.forEach(script => {
+      const parsed = JSON.parse(script.textContent || '{}');
+      const items = Array.isArray(parsed) ? parsed : (parsed['@graph'] || [parsed]);
+      for (const item of items) {
+        if (!item || !item['@type']) continue;
+        const schemaType = String(item['@type']);
+        const schemaName = item.name || item.headline || item.title || '';
+        const schemaDesc = item.description || item.articleBody || '';
+        if (schemaName) {
+          idx++;
+          sections.push({
+            id: `sec_schema_${idx}`,
+            url: pageUrl,
+            pageTitle: `${schemaType}: ${schemaName}`,
+            title: schemaName.slice(0, 100),
+            snippet: (schemaDesc || `${schemaType} on ${pageDocTitle}`).slice(0, 200),
+            metadata: {
+              schemaType,
+              price: item.price || item.offers?.price,
+              timings: item.openingHours || item.openingHoursSpecification ? JSON.stringify(item.openingHours || item.openingHoursSpecification) : undefined
+            }
+          });
+        }
+      }
+    });
+  } catch {
+    // Ignore JSON-LD parse errors
+  }
+
   return sections;
 }
 
 /**
+ * Heuristic priority scorer for internal links:
+ * High score = high value (pricing, docs, services, about, specs, return policy)
+ * Negative score = discard or deprioritize (year=, tag/, page=, date archives)
+ */
+export function scoreLinkPriority(pathname: string, search: string): number {
+  let score = 50; // base score
+
+  const lowPriorityRegex = /(?:[?&](?:page|p|year|month|date|replytocom|filter|sort|order)=|\/(?:tag|category|author|page|archive|20\d\d)\/)/i;
+  if (lowPriorityRegex.test(pathname) || lowPriorityRegex.test(search)) {
+    return -100; // ignore/prune
+  }
+
+  const highPriorityKeywords = [
+    { pattern: /\b(pricing|price|fees|plans|rates)\b/i, boost: 40 },
+    { pattern: /\b(docs|documentation|guide|manual|specs|specification|features)\b/i, boost: 35 },
+    { pattern: /\b(service|services|departments|specialties|treatments|doctors|physicians|team)\b/i, boost: 30 },
+    { pattern: /\b(policy|policies|returns|refund|warranty|shipping|faq|help|terms)\b/i, boost: 30 },
+    { pattern: /\b(about|contact|location|hours|timings|admission|schedule|book|appointment)\b/i, boost: 25 },
+    { pattern: /\b(products|shop|catalog|courses|programs)\b/i, boost: 20 },
+  ];
+
+  for (const { pattern, boost } of highPriorityKeywords) {
+    if (pattern.test(pathname)) {
+      score += boost;
+    }
+  }
+
+  // Shorter, cleaner directory paths are usually higher in navigation hierarchy
+  const depth = (pathname.match(/\//g) || []).length;
+  if (depth <= 2) score += 15;
+  else if (depth > 4) score -= 15;
+
+  return score;
+}
+
+/**
  * Extracts and filters internal links from a page, excluding external sites,
- * social links, file downloads, and auth routes.
+ * social links, file downloads, auth routes, and low-priority archives (year=, tag/, page=).
  */
 export function extractValidInternalLinks(
   htmlContent: string,
   baseUrl: string,
   originDomain: string
-): string[] {
+): { url: string; score: number }[] {
   const parser = new DOMParser();
   const doc = parser.parseFromString(htmlContent, 'text/html');
   const anchors = doc.querySelectorAll('a[href]');
-  const validUrls = new Set<string>();
+  const discoveredMap = new Map<string, number>();
 
-  const ignoreRegex = /\.(pdf|zip|rar|jpg|jpeg|png|gif|svg|mp4|exe|apk|dmg|iso)$/i;
-  const skipPathRegex = /\b(login|logout|signin|signup|cart|checkout|auth|oauth|share|facebook|twitter|instagram|linkedin|youtube)\b/i;
+  const ignoreExtRegex = /\.(pdf|zip|rar|tar|gz|jpg|jpeg|png|gif|svg|webp|mp4|webm|exe|apk|dmg|iso|css|js)$/i;
+  const skipPathRegex = /\b(login|logout|signin|signup|cart|checkout|auth|oauth|share|facebook|twitter|instagram|linkedin|youtube|pinterest)\b/i;
 
   anchors.forEach(a => {
     try {
@@ -116,19 +184,29 @@ export function extractValidInternalLinks(
       }
 
       // Check file extensions & skip paths
-      if (ignoreRegex.test(resolved.pathname) || skipPathRegex.test(resolved.pathname)) {
+      if (ignoreExtRegex.test(resolved.pathname) || skipPathRegex.test(resolved.pathname)) {
         return;
       }
 
-      // Strip query parameters and hashes for canonical crawling
+      const priority = scoreLinkPriority(resolved.pathname, resolved.search);
+      if (priority < 0) {
+        return; // Filter out low-priority pagination/archive links
+      }
+
+      // Strip trailing slashes & hash
       const cleanUrl = `${resolved.origin}${resolved.pathname}`.replace(/\/$/, '');
       if (cleanUrl !== baseUrl.replace(/\/$/, '')) {
-        validUrls.add(cleanUrl);
+        const existingScore = discoveredMap.get(cleanUrl);
+        if (existingScore === undefined || priority > existingScore) {
+          discoveredMap.set(cleanUrl, priority);
+        }
       }
     } catch {
       // Ignore malformed URLs
     }
   });
 
-  return Array.from(validUrls);
+  return Array.from(discoveredMap.entries())
+    .map(([url, score]) => ({ url, score }))
+    .sort((a, b) => b.score - a.score);
 }

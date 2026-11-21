@@ -229,14 +229,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResp) => {
 });
 
 // 2. Direct DOM key bindings (Capture phase to precede browser/page handlers)
-// Supports: Ctrl+K, Cmd+K, Alt+K, and Ctrl+Shift+K
+// Dedicated hotkey: Alt+K (and Ctrl+K also supported)
 window.addEventListener('keydown', (e) => {
-  const isK = e.key.toLowerCase() === 'k';
-  const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+  const isK = e.key.toLowerCase() === 'k' || e.code === 'KeyK';
   const isAlt = e.altKey;
-  const isShift = e.shiftKey;
+  const isCtrlOrCmd = e.ctrlKey || e.metaKey;
 
-  if (isK && (isAlt || isCtrlOrCmd || (isCtrlOrCmd && isShift))) {
+  if (isK && (isAlt || isCtrlOrCmd)) {
     e.preventDefault();
     e.stopPropagation();
     togglePalette();
@@ -246,7 +245,7 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     closePalette();
   }
-}, true); // useCapture = true ensures Wayfindr intercepts the hotkey before native Firefox search focus
+}, true);
 
 backdrop.addEventListener('click', (e) => {
   if (e.target === backdrop) closePalette();
