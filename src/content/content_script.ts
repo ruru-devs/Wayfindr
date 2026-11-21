@@ -215,7 +215,7 @@ backdrop.innerHTML = `
     </div>
     <div class="footer">
       <span>⚡ <strong>Wayfindr</strong> Extension Engine</span>
-      <span>Sub-10ms Cross-Page Jump</span>
+      <span id="footer-status">Sub-10ms Cross-Page Jump</span>
     </div>
   </div>
 `;
@@ -224,9 +224,31 @@ shadow.appendChild(backdrop);
 const searchInput = backdrop.querySelector('.search-input') as HTMLInputElement;
 const resultsContainer = backdrop.querySelector('.results') as HTMLDivElement;
 
+function updateIndexingStatus(state?: string, count?: number) {
+  const statusEl = backdrop.querySelector('#footer-status');
+  if (!statusEl) return;
+
+  if (state === 'INDEXING') {
+    statusEl.textContent = '⚡ Indexing site in background...';
+  } else if (state === 'REINDEXING') {
+    statusEl.textContent = '🔄 Refreshing site index...';
+  } else if (state === 'STALE') {
+    statusEl.textContent = `⚠️ Index stale (${count || 0} sections)`;
+  } else if (state === 'READY') {
+    statusEl.textContent = `✓ Ready (${count || 0} sections)`;
+  } else {
+    statusEl.textContent = 'Sub-10ms Cross-Page Jump';
+  }
+}
+
 function openPalette() {
   backdrop.classList.add('open');
   searchInput.focus();
+  try {
+    chrome.runtime.sendMessage({ action: 'GET_STATE', url: window.location.href }, (resp) => {
+      if (resp) updateIndexingStatus(resp.state, resp.count);
+    });
+  } catch {}
 }
 
 function closePalette() {
@@ -284,6 +306,7 @@ searchInput.addEventListener('input', () => {
 
   debounce = setTimeout(() => {
     chrome.runtime.sendMessage({ action: 'SEARCH_QUERY', query: q, url: window.location.href }, (resp) => {
+      if (resp?.status) updateIndexingStatus(resp.status, resp.indexedSectionsCount);
       renderResults(resp?.results || []);
     });
   }, 100);

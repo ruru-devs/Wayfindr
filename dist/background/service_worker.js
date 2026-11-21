@@ -297,6 +297,164 @@
     }
   };
 
+  // src/background/indexer_coordinator.ts
+  var DEFAULT_CRAWL_CONFIG = {
+    maxPages: 30,
+    maxDepth: 2,
+    maxBytesPerSite: 10 * 1024 * 1024,
+    // 10 MB total
+    maxBytesPerPage: 1024 * 1024,
+    // 1 MB per page
+    requestTimeoutMs: 8e3,
+    // 8 seconds
+    concurrency: 3,
+    cacheTtlMs: 24 * 60 * 60 * 1e3
+    // 24 hours
+  };
+  var IndexerCoordinator = class {
+    constructor(config = {}) {
+      this.inMemoryIndices = /* @__PURE__ */ new Map();
+      this.activeCrawlJobs = /* @__PURE__ */ new Map();
+      this.domainStates = /* @__PURE__ */ new Map();
+      this.config = { ...DEFAULT_CRAWL_CONFIG, ...config };
+    }
+    getConfig() {
+      return this.config;
+    }
+    getState(domain) {
+      return this.domainStates.get(domain) || "UNINDEXED";
+    }
+    setState(domain, state) {
+      this.domainStates.set(domain, state);
+      try {
+        if (typeof chrome !== "undefined" && chrome.storage?.local) {
+          chrome.storage.local.set({ [`wayfindr_state_${domain}`]: state }).catch(() => {
+          });
+        }
+      } catch {
+      }
+    }
+    getSiteIndex(domain) {
+      return this.inMemoryIndices.get(domain);
+    }
+    setSiteIndex(domain, record) {
+      this.inMemoryIndices.set(domain, record);
+      this.setState(domain, "READY");
+    }
+    hasActiveCrawl(domain) {
+      return this.activeCrawlJobs.has(domain);
+    }
+    getActiveCrawl(domain) {
+      return this.activeCrawlJobs.get(domain)?.promise;
+    }
+    registerActiveCrawl(domain, crawlPromiseFactory) {
+      const existing = this.activeCrawlJobs.get(domain);
+      if (existing) {
+        console.log(`[Coordinator] Multiple tabs requested crawl for ${domain}; attaching to active job.`);
+        return existing.promise;
+      }
+      const abortController = new AbortController();
+      const isReindex = this.inMemoryIndices.has(domain);
+      this.setState(domain, isReindex ? "REINDEXING" : "INDEXING");
+      const promise = crawlPromiseFactory(abortController.signal).then((sections) => {
+        const engine = new ClientBM25Engine();
+        engine.index(sections);
+        const record = {
+          engine,
+          sections,
+          timestamp: Date.now(),
+          pagesCount: new Set(sections.map((s) => s.url)).size
+        };
+        this.setSiteIndex(domain, record);
+        this.setState(domain, "READY");
+        return sections;
+      }).catch((err) => {
+        if (abortController.signal.aborted) {
+          console.log(`[Coordinator] Crawl for ${domain} was cancelled.`);
+        } else {
+          console.error(`[Coordinator] Crawl failed for ${domain}:`, err);
+        }
+        this.setState(domain, this.inMemoryIndices.has(domain) ? "STALE" : "UNINDEXED");
+        throw err;
+      }).finally(() => {
+        this.activeCrawlJobs.delete(domain);
+      });
+      this.activeCrawlJobs.set(domain, { promise, abortController });
+      return promise;
+    }
+    cancelActiveCrawl(domain) {
+      const job = this.activeCrawlJobs.get(domain);
+      if (job) {
+        job.abortController.abort();
+        this.activeCrawlJobs.delete(domain);
+        this.setState(domain, this.inMemoryIndices.has(domain) ? "STALE" : "UNINDEXED");
+      }
+    }
+    /**
+     * Rebuilds in-memory index from chrome.storage.local on demand
+     * when service worker wakes up from idle termination.
+     */
+    async ensureIndexLoaded(domain) {
+      const memRecord = this.inMemoryIndices.get(domain);
+      if (memRecord) {
+        const isStale = Date.now() - memRecord.timestamp > this.config.cacheTtlMs;
+        const state = isStale ? "STALE" : "READY";
+        this.setState(domain, state);
+        return { record: memRecord, state };
+      }
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        try {
+          const key = `wayfindr_${domain}`;
+          const res = await chrome.storage.local.get([key, `wayfindr_state_${domain}`]);
+          const cached = res ? res[key] : null;
+          if (cached && Array.isArray(cached.sections) && cached.sections.length > 0) {
+            const engine = new ClientBM25Engine();
+            engine.index(cached.sections);
+            const isStale = Date.now() - (cached.timestamp || 0) > this.config.cacheTtlMs;
+            const state = isStale ? "STALE" : "READY";
+            const record = {
+              engine,
+              sections: cached.sections,
+              timestamp: cached.timestamp || Date.now(),
+              pagesCount: new Set(cached.sections.map((s) => s.url)).size
+            };
+            this.inMemoryIndices.set(domain, record);
+            this.setState(domain, state);
+            return { record, state };
+          }
+        } catch (e) {
+          console.warn(`[Coordinator] Error reviving cache for ${domain}:`, e);
+        }
+      }
+      return { record: void 0, state: "UNINDEXED" };
+    }
+    /**
+     * Replaces sections belonging to a specific page rather than accumulating duplicates.
+     */
+    mergeLivePageSections(domain, pageUrl, liveSections) {
+      const current = this.inMemoryIndices.get(domain);
+      if (!current) {
+        const engine = new ClientBM25Engine();
+        engine.index(liveSections);
+        const record = {
+          engine,
+          sections: liveSections,
+          timestamp: Date.now(),
+          pagesCount: 1
+        };
+        this.setSiteIndex(domain, record);
+        return record;
+      }
+      const otherSections = current.sections.filter((s) => s.url !== pageUrl);
+      const merged = [...otherSections, ...liveSections];
+      current.engine.index(merged);
+      current.sections = merged;
+      current.pagesCount = new Set(merged.map((s) => s.url)).size;
+      this.setSiteIndex(domain, current);
+      return current;
+    }
+  };
+
   // src/background/service_worker.ts
   var BLOCKED_DOMAINS = [
     "google.com",
@@ -312,16 +470,20 @@
     "instagram.com",
     "reddit.com"
   ];
-  var MAX_PAGES_TO_CRAWL = 80;
-  var siteIndices = /* @__PURE__ */ new Map();
+  var coordinator = new IndexerCoordinator(DEFAULT_CRAWL_CONFIG);
   function isDomainAllowed(domain) {
-    return !BLOCKED_DOMAINS.some((b) => domain === b || domain.endsWith(`.${b}`));
+    const clean = domain.toLowerCase();
+    return !BLOCKED_DOMAINS.some((b) => clean === b || clean.endsWith(`.${b}`));
   }
-  async function discoverSeedUrls(originUrl, domain) {
+  async function discoverSeedUrls(originUrl, domain, signal) {
     const seeds = [];
     const baseOrigin = new URL(originUrl).origin;
     try {
-      const llmResp = await fetch(`${baseOrigin}/llms.txt`, { method: "GET", cache: "force-cache" });
+      const llmResp = await fetch(`${baseOrigin}/llms.txt`, {
+        method: "GET",
+        cache: "force-cache",
+        signal
+      });
       if (llmResp.ok) {
         const text = await llmResp.text();
         const lines = text.split("\n");
@@ -338,7 +500,11 @@
     } catch {
     }
     try {
-      const sitemapResp = await fetch(`${baseOrigin}/sitemap.xml`, { method: "GET", cache: "force-cache" });
+      const sitemapResp = await fetch(`${baseOrigin}/sitemap.xml`, {
+        method: "GET",
+        cache: "force-cache",
+        signal
+      });
       if (sitemapResp.ok) {
         const xml = await sitemapResp.text();
         const locMatches = xml.match(/<loc>(https?:\/\/[^<]+)<\/loc>/g);
@@ -356,7 +522,63 @@
     }
     return Array.from(new Set(seeds));
   }
-  async function crawlDomain(originUrl) {
+  async function fetchHtmlWithBudget(url, timeoutMs, maxBytesPerPage, parentSignal) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const abortListener = () => controller.abort();
+    if (parentSignal) {
+      if (parentSignal.aborted) return null;
+      parentSignal.addEventListener("abort", abortListener);
+    }
+    try {
+      const resp = await fetch(url, {
+        method: "GET",
+        headers: { "Accept": "text/html,application/xhtml+xml" },
+        cache: "force-cache",
+        signal: controller.signal
+      });
+      if (!resp.ok) return null;
+      const contentType = resp.headers.get("content-type") || "";
+      if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) {
+        return null;
+      }
+      const contentLength = resp.headers.get("content-length");
+      if (contentLength && parseInt(contentLength, 10) > maxBytesPerPage) {
+        console.warn(`[Wayfindr] Skipping ${url}: content-length ${contentLength} exceeds limit`);
+        return null;
+      }
+      if (!resp.body) {
+        const text = await resp.text();
+        return text.length <= maxBytesPerPage ? { html: text, finalUrl: resp.url } : null;
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let totalBytes = 0;
+      let html = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBytesPerPage) {
+          console.warn(`[Wayfindr] Truncating ${url}: stream exceeded ${maxBytesPerPage} bytes`);
+          controller.abort();
+          break;
+        }
+        html += decoder.decode(value, { stream: true });
+      }
+      html += decoder.decode();
+      return { html, finalUrl: resp.url };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeoutId);
+      if (parentSignal) {
+        parentSignal.removeEventListener("abort", abortListener);
+      }
+    }
+  }
+  async function crawlDomain(originUrl, signal, customConfig) {
+    const config = { ...coordinator.getConfig(), ...customConfig };
     const urlObj = new URL(originUrl);
     const domain = urlObj.hostname;
     if (!isDomainAllowed(domain)) {
@@ -364,14 +586,14 @@
       return [];
     }
     const isHomepage = urlObj.pathname === "/" || urlObj.pathname === "" || urlObj.pathname === "/index.html";
-    const maxDepth = isHomepage ? 2 : 1;
-    console.log(`[Wayfindr] Starting background crawl for: ${domain} (Homepage: ${isHomepage}, MaxDepth: ${maxDepth}, Budget: ${MAX_PAGES_TO_CRAWL})`);
+    const maxDepth = isHomepage ? config.maxDepth : 1;
+    console.log(`[Wayfindr] Starting bounded crawl for: ${domain} (MaxPages: ${config.maxPages}, Concurrency: ${config.concurrency})`);
     const visitedUrls = /* @__PURE__ */ new Set();
     const queue = [];
     const originClean = originUrl.split("#")[0].replace(/\/$/, "");
     queue.push({ url: originClean, depth: 0, score: 999 });
     try {
-      const seedUrls = await discoverSeedUrls(originUrl, domain);
+      const seedUrls = await discoverSeedUrls(originUrl, domain, signal);
       for (const seed of seedUrls.slice(0, 30)) {
         if (seed !== originClean) {
           queue.push({ url: seed.replace(/\/$/, ""), depth: 1, score: 85 });
@@ -380,30 +602,31 @@
     } catch {
     }
     const allSections = [];
-    while (queue.length > 0 && visitedUrls.size < MAX_PAGES_TO_CRAWL) {
-      queue.sort((a, b) => b.score - a.score);
-      const item = queue.shift();
-      const currentUrl = item.url;
-      if (visitedUrls.has(currentUrl)) continue;
-      visitedUrls.add(currentUrl);
-      try {
-        const resp = await fetch(currentUrl, {
-          method: "GET",
-          headers: { "Accept": "text/html,application/xhtml+xml" },
-          cache: "force-cache"
-        });
-        if (!resp.ok) continue;
-        if (resp.url && !isValidCrawlUrl(resp.url, domain)) {
-          console.warn(`[Wayfindr] Crawl redirect to untrusted origin blocked: ${resp.url}`);
+    let totalBytesCrawled = 0;
+    async function worker() {
+      while (queue.length > 0 && visitedUrls.size < config.maxPages && totalBytesCrawled < config.maxBytesPerSite) {
+        if (signal?.aborted) break;
+        queue.sort((a, b) => b.score - a.score);
+        const item = queue.shift();
+        if (!item) break;
+        if (visitedUrls.has(item.url)) continue;
+        visitedUrls.add(item.url);
+        const fetchRes = await fetchHtmlWithBudget(
+          item.url,
+          config.requestTimeoutMs,
+          config.maxBytesPerPage,
+          signal
+        );
+        if (!fetchRes || signal?.aborted) continue;
+        if (fetchRes.finalUrl && !isValidCrawlUrl(fetchRes.finalUrl, domain)) {
+          console.warn(`[Wayfindr] Crawl redirect to untrusted origin blocked: ${fetchRes.finalUrl}`);
           continue;
         }
-        const contentType = resp.headers.get("content-type") || "";
-        if (!contentType.includes("text/html")) continue;
-        const html = await resp.text();
-        const pageSections = extractSectionsFromHtml(html, currentUrl, domain);
+        totalBytesCrawled += fetchRes.html.length;
+        const pageSections = extractSectionsFromHtml(fetchRes.html, item.url, domain);
         allSections.push(...pageSections);
-        if (item.depth < maxDepth) {
-          const discoveredLinks = extractValidInternalLinks(html, currentUrl, domain);
+        if (item.depth < maxDepth && visitedUrls.size < config.maxPages) {
+          const discoveredLinks = extractValidInternalLinks(fetchRes.html, item.url, domain);
           for (const linkObj of discoveredLinks) {
             if (!visitedUrls.has(linkObj.url) && !queue.some((q) => q.url === linkObj.url)) {
               queue.push({
@@ -414,25 +637,31 @@
             }
           }
         }
-      } catch (err) {
-        console.warn(`[Wayfindr] Failed to crawl ${currentUrl}:`, err);
       }
     }
+    const workerCount = Math.min(config.concurrency, 4);
+    const workers = Array.from({ length: workerCount }, () => worker());
+    await Promise.all(workers);
     console.log(`[Wayfindr] Crawled ${visitedUrls.size} pages, indexed ${allSections.length} sections for ${domain}`);
-    const engine = new ClientBM25Engine();
-    engine.index(allSections);
-    siteIndices.set(domain, { engine, sections: allSections, timestamp: Date.now() });
     try {
-      await chrome.storage.local.set({
-        [`wayfindr_${domain}`]: {
-          sections: allSections,
-          timestamp: Date.now()
-        }
-      });
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        await chrome.storage.local.set({
+          [`wayfindr_${domain}`]: {
+            sections: allSections,
+            timestamp: Date.now()
+          }
+        });
+      }
     } catch (err) {
       console.warn("[Wayfindr] Failed to save index to storage:", err);
     }
     return allSections;
+  }
+  function initiateCrawl(originUrl) {
+    const domain = new URL(originUrl).hostname;
+    return coordinator.registerActiveCrawl(domain, (signal) => {
+      return crawlDomain(originUrl, signal, coordinator.getConfig());
+    });
   }
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "PAGE_LOADED") {
@@ -440,94 +669,87 @@
       const liveSections = message.liveSections || [];
       try {
         const domain = new URL(url).hostname;
-        if (isDomainAllowed(domain)) {
-          if (liveSections.length > 0) {
-            let currentSite = siteIndices.get(domain);
-            if (!currentSite) {
-              const engine = new ClientBM25Engine();
-              engine.index(liveSections);
-              siteIndices.set(domain, { engine, sections: liveSections, timestamp: Date.now() });
-            } else {
-              const existingIds = new Set(currentSite.sections.map((s) => s.id));
-              const newSections = liveSections.filter((s) => !existingIds.has(s.id));
-              if (newSections.length > 0) {
-                const combined = [...currentSite.sections, ...newSections];
-                currentSite.engine.index(combined);
-                currentSite.sections = combined;
-                siteIndices.set(domain, currentSite);
-              }
-            }
-          }
-          if (!siteIndices.has(domain)) {
-            chrome.storage.local.get([`wayfindr_${domain}`], (res) => {
-              const cached = res ? res[`wayfindr_${domain}`] : null;
-              if (cached && Date.now() - cached.timestamp < 24 * 60 * 60 * 1e3) {
-                const engine = new ClientBM25Engine();
-                const merged = [...cached.sections, ...liveSections.filter((ls) => !cached.sections.some((cs) => cs.id === ls.id))];
-                engine.index(merged);
-                siteIndices.set(domain, { engine, sections: merged, timestamp: cached.timestamp });
-                console.log(`[Wayfindr] Loaded ${domain} index from local cache (${merged.length} sections)`);
-                sendResponse({ status: "CACHED", count: merged.length });
-              } else {
-                crawlDomain(url).then((sections) => {
-                  const combined = [...sections, ...liveSections.filter((ls) => !sections.some((cs) => cs.id === ls.id))];
-                  sendResponse({ status: "CRAWLED", count: combined.length });
-                }).catch((err) => {
-                  console.error("[Wayfindr] Crawl failed:", err);
-                  sendResponse({ status: "ERROR", error: String(err) });
-                });
-              }
-            });
-            return true;
-          } else {
-            const site = siteIndices.get(domain);
-            sendResponse({ status: "READY", count: site?.sections.length || 0 });
-            return false;
-          }
+        if (!isDomainAllowed(domain)) {
+          sendResponse({ status: "IGNORED" });
+          return false;
         }
+        if (liveSections.length > 0) {
+          coordinator.mergeLivePageSections(domain, url, liveSections);
+        }
+        coordinator.ensureIndexLoaded(domain).then(({ record, state }) => {
+          if (state === "READY") {
+            sendResponse({ status: "READY", count: record?.sections.length || 0 });
+          } else if (state === "STALE") {
+            initiateCrawl(url).catch(() => {
+            });
+            sendResponse({ status: "STALE", count: record?.sections.length || 0 });
+          } else if (state === "INDEXING" || state === "REINDEXING") {
+            sendResponse({ status: state, count: record?.sections.length || 0 });
+          } else {
+            initiateCrawl(url).then((sections) => {
+              sendResponse({ status: "CRAWLED", count: sections.length });
+            }).catch((err) => {
+              sendResponse({ status: "ERROR", error: String(err) });
+            });
+          }
+        });
+        return true;
       } catch (e) {
         console.error("[Wayfindr] Invalid URL in PAGE_LOADED:", e);
+        sendResponse({ status: "ERROR" });
+        return false;
       }
-      sendResponse({ status: "IGNORED" });
-      return false;
     }
     if (message.action === "SEARCH_QUERY") {
       const { query, url } = message;
       try {
         const domain = new URL(url).hostname;
-        const site = siteIndices.get(domain);
-        if (!site) {
-          chrome.storage.local.get([`wayfindr_${domain}`], (res) => {
-            const cached = res ? res[`wayfindr_${domain}`] : null;
-            if (cached && cached.sections) {
-              const engine = new ClientBM25Engine();
-              engine.index(cached.sections);
-              siteIndices.set(domain, { engine, sections: cached.sections, timestamp: cached.timestamp });
-              const results2 = engine.search(query, url, 6);
-              sendResponse({ results: results2, status: "READY", indexedSectionsCount: cached.sections.length });
-            } else {
-              sendResponse({ results: [], status: "INDEXING" });
-            }
+        coordinator.ensureIndexLoaded(domain).then(({ record, state }) => {
+          if (!record || record.sections.length === 0) {
+            sendResponse({ results: [], status: state, indexedSectionsCount: 0 });
+            return;
+          }
+          const results = record.engine.search(query, url, 6);
+          sendResponse({
+            results,
+            status: state,
+            indexedSectionsCount: record.sections.length
           });
-          return true;
-        }
-        const results = site.engine.search(query, url, 6);
-        sendResponse({ results, status: "READY", indexedSectionsCount: site.sections.length });
-        return false;
-      } catch (err) {
+        });
+        return true;
+      } catch {
         sendResponse({ results: [], status: "ERROR" });
         return false;
       }
     }
     if (message.action === "TRIGGER_REINDEX") {
       const { url } = message;
-      crawlDomain(url).then((sections) => {
-        sendResponse({ status: "DONE", sectionsCount: sections.length });
-      }).catch((err) => {
-        console.error("[Wayfindr] Re-index failed:", err);
+      try {
+        const domain = new URL(url).hostname;
+        coordinator.cancelActiveCrawl(domain);
+        initiateCrawl(url).then((sections) => {
+          sendResponse({ status: "DONE", sectionsCount: sections.length });
+        }).catch((err) => {
+          sendResponse({ status: "ERROR", error: String(err) });
+        });
+        return true;
+      } catch (err) {
         sendResponse({ status: "ERROR", error: String(err) });
-      });
-      return true;
+        return false;
+      }
+    }
+    if (message.action === "GET_STATE") {
+      const { url } = message;
+      try {
+        const domain = new URL(url).hostname;
+        const state = coordinator.getState(domain);
+        const record = coordinator.getSiteIndex(domain);
+        sendResponse({ state, count: record?.sections.length || 0 });
+        return false;
+      } catch {
+        sendResponse({ state: "UNINDEXED", count: 0 });
+        return false;
+      }
     }
     return false;
   });

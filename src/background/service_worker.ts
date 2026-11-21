@@ -1,7 +1,13 @@
-import { SectionNode, CrawlJob } from '../engine/types';
+import { SectionNode } from '../engine/types';
 import { extractSectionsFromHtml, extractValidInternalLinks } from '../engine/sectionizer';
 import { ClientBM25Engine } from '../engine/bm25';
 import { isValidCrawlUrl } from '../engine/url_utils';
+import {
+  IndexerCoordinator,
+  DEFAULT_CRAWL_CONFIG,
+  CrawlBudgetConfig,
+  IndexState
+} from './indexer_coordinator';
 
 // Domains to ignore (search engines, video feeds, social networks)
 const BLOCKED_DOMAINS = [
@@ -12,24 +18,31 @@ const BLOCKED_DOMAINS = [
   'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'reddit.com'
 ];
 
-const MAX_PAGES_TO_CRAWL = 80; // High-capacity crawl budget
-
-const siteIndices = new Map<string, { engine: ClientBM25Engine; sections: SectionNode[]; timestamp: number }>();
+export const coordinator = new IndexerCoordinator(DEFAULT_CRAWL_CONFIG);
 
 function isDomainAllowed(domain: string): boolean {
-  return !BLOCKED_DOMAINS.some(b => domain === b || domain.endsWith(`.${b}`));
+  const clean = domain.toLowerCase();
+  return !BLOCKED_DOMAINS.some(b => clean === b || clean.endsWith(`.${b}`));
 }
 
 /**
  * Attempts to discover URLs from /sitemap.xml and /llms.txt before blind crawling
  */
-async function discoverSeedUrls(originUrl: string, domain: string): Promise<string[]> {
+async function discoverSeedUrls(
+  originUrl: string,
+  domain: string,
+  signal?: AbortSignal
+): Promise<string[]> {
   const seeds: string[] = [];
   const baseOrigin = new URL(originUrl).origin;
 
   // 1. Try llms.txt (LLM/Agent discovery standard)
   try {
-    const llmResp = await fetch(`${baseOrigin}/llms.txt`, { method: 'GET', cache: 'force-cache' });
+    const llmResp = await fetch(`${baseOrigin}/llms.txt`, {
+      method: 'GET',
+      cache: 'force-cache',
+      signal
+    });
     if (llmResp.ok) {
       const text = await llmResp.text();
       const lines = text.split('\n');
@@ -47,7 +60,11 @@ async function discoverSeedUrls(originUrl: string, domain: string): Promise<stri
 
   // 2. Try sitemap.xml
   try {
-    const sitemapResp = await fetch(`${baseOrigin}/sitemap.xml`, { method: 'GET', cache: 'force-cache' });
+    const sitemapResp = await fetch(`${baseOrigin}/sitemap.xml`, {
+      method: 'GET',
+      cache: 'force-cache',
+      signal
+    });
     if (sitemapResp.ok) {
       const xml = await sitemapResp.text();
       const locMatches = xml.match(/<loc>(https?:\/\/[^<]+)<\/loc>/g);
@@ -67,12 +84,93 @@ async function discoverSeedUrls(originUrl: string, domain: string): Promise<stri
 }
 
 /**
- * Background Crawler Engine:
- * - Adapts depth: Depth 2 if at homepage/root (indexes all root links + their children), Depth 1 otherwise.
- * - Up to 80 pages crawled with link ranking and prioritization.
- * - Parses /sitemap.xml, /llms.txt, and schema.org JSON-LD data.
+ * Fetches an HTML page with timeout, Content-Length inspection,
+ * Content-Type validation, and chunked response size cap.
  */
-async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
+async function fetchHtmlWithBudget(
+  url: string,
+  timeoutMs: number,
+  maxBytesPerPage: number,
+  parentSignal?: AbortSignal
+): Promise<{ html: string; finalUrl: string } | null> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const abortListener = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) return null;
+    parentSignal.addEventListener('abort', abortListener);
+  }
+
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: { 'Accept': 'text/html,application/xhtml+xml' },
+      cache: 'force-cache',
+      signal: controller.signal
+    });
+
+    if (!resp.ok) return null;
+
+    const contentType = resp.headers.get('content-type') || '';
+    if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+      return null;
+    }
+
+    const contentLength = resp.headers.get('content-length');
+    if (contentLength && parseInt(contentLength, 10) > maxBytesPerPage) {
+      console.warn(`[Wayfindr] Skipping ${url}: content-length ${contentLength} exceeds limit`);
+      return null;
+    }
+
+    // Stream-limit response body to prevent memory blowout on unbounded responses
+    if (!resp.body) {
+      const text = await resp.text();
+      return text.length <= maxBytesPerPage ? { html: text, finalUrl: resp.url } : null;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let totalBytes = 0;
+    let html = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytesPerPage) {
+        console.warn(`[Wayfindr] Truncating ${url}: stream exceeded ${maxBytesPerPage} bytes`);
+        controller.abort();
+        break;
+      }
+      html += decoder.decode(value, { stream: true });
+    }
+    html += decoder.decode();
+
+    return { html, finalUrl: resp.url };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+    if (parentSignal) {
+      parentSignal.removeEventListener('abort', abortListener);
+    }
+  }
+}
+
+/**
+ * Background Bounded Concurrent Crawler:
+ * - Adapts depth: Depth 2 at homepage, Depth 1 on subpages.
+ * - Bounded concurrency (default: 3 parallel workers).
+ * - Bounded total byte budget and per-page limits.
+ * - Respects parent cancellation signal.
+ */
+export async function crawlDomain(
+  originUrl: string,
+  signal?: AbortSignal,
+  customConfig?: Partial<CrawlBudgetConfig>
+): Promise<SectionNode[]> {
+  const config: CrawlBudgetConfig = { ...coordinator.getConfig(), ...customConfig };
   const urlObj = new URL(originUrl);
   const domain = urlObj.hostname;
 
@@ -81,14 +179,12 @@ async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
     return [];
   }
 
-  // Check if we are at the homepage/root
   const isHomepage = urlObj.pathname === '/' || urlObj.pathname === '' || urlObj.pathname === '/index.html';
-  const maxDepth = isHomepage ? 2 : 1;
+  const maxDepth = isHomepage ? config.maxDepth : 1;
 
-  console.log(`[Wayfindr] Starting background crawl for: ${domain} (Homepage: ${isHomepage}, MaxDepth: ${maxDepth}, Budget: ${MAX_PAGES_TO_CRAWL})`);
+  console.log(`[Wayfindr] Starting bounded crawl for: ${domain} (MaxPages: ${config.maxPages}, Concurrency: ${config.concurrency})`);
 
   const visitedUrls = new Set<string>();
-  // Queue stores: { url, depth, score }
   const queue: { url: string; depth: number; score: number }[] = [];
 
   const originClean = originUrl.split('#')[0].replace(/\/$/, '');
@@ -96,7 +192,7 @@ async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
 
   // Add sitemap/llms.txt discovery seeds at depth 1
   try {
-    const seedUrls = await discoverSeedUrls(originUrl, domain);
+    const seedUrls = await discoverSeedUrls(originUrl, domain, signal);
     for (const seed of seedUrls.slice(0, 30)) {
       if (seed !== originClean) {
         queue.push({ url: seed.replace(/\/$/, ''), depth: 1, score: 85 });
@@ -105,41 +201,43 @@ async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
   } catch {}
 
   const allSections: SectionNode[] = [];
+  let totalBytesCrawled = 0;
 
-  while (queue.length > 0 && visitedUrls.size < MAX_PAGES_TO_CRAWL) {
-    // Sort queue by priority score descending
-    queue.sort((a, b) => b.score - a.score);
-    const item = queue.shift()!;
-    const currentUrl = item.url;
+  // Bounded concurrency pool
+  async function worker() {
+    while (queue.length > 0 && visitedUrls.size < config.maxPages && totalBytesCrawled < config.maxBytesPerSite) {
+      if (signal?.aborted) break;
 
-    if (visitedUrls.has(currentUrl)) continue;
-    visitedUrls.add(currentUrl);
+      queue.sort((a, b) => b.score - a.score);
+      const item = queue.shift();
+      if (!item) break;
 
-    try {
-      const resp = await fetch(currentUrl, {
-        method: 'GET',
-        headers: { 'Accept': 'text/html,application/xhtml+xml' },
-        cache: 'force-cache'
-      });
+      if (visitedUrls.has(item.url)) continue;
+      visitedUrls.add(item.url);
 
-      if (!resp.ok) continue;
+      const fetchRes = await fetchHtmlWithBudget(
+        item.url,
+        config.requestTimeoutMs,
+        config.maxBytesPerPage,
+        signal
+      );
+
+      if (!fetchRes || signal?.aborted) continue;
 
       // Validate redirect destination
-      if (resp.url && !isValidCrawlUrl(resp.url, domain)) {
-        console.warn(`[Wayfindr] Crawl redirect to untrusted origin blocked: ${resp.url}`);
+      if (fetchRes.finalUrl && !isValidCrawlUrl(fetchRes.finalUrl, domain)) {
+        console.warn(`[Wayfindr] Crawl redirect to untrusted origin blocked: ${fetchRes.finalUrl}`);
         continue;
       }
 
-      const contentType = resp.headers.get('content-type') || '';
-      if (!contentType.includes('text/html')) continue;
+      totalBytesCrawled += fetchRes.html.length;
 
-      const html = await resp.text();
-      const pageSections = extractSectionsFromHtml(html, currentUrl, domain);
+      const pageSections = extractSectionsFromHtml(fetchRes.html, item.url, domain);
       allSections.push(...pageSections);
 
-      // Only discover deeper links if within depth limit
-      if (item.depth < maxDepth) {
-        const discoveredLinks = extractValidInternalLinks(html, currentUrl, domain);
+      // Enqueue child links if within depth limit
+      if (item.depth < maxDepth && visitedUrls.size < config.maxPages) {
+        const discoveredLinks = extractValidInternalLinks(fetchRes.html, item.url, domain);
         for (const linkObj of discoveredLinks) {
           if (!visitedUrls.has(linkObj.url) && !queue.some(q => q.url === linkObj.url)) {
             queue.push({
@@ -150,26 +248,25 @@ async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
           }
         }
       }
-    } catch (err) {
-      console.warn(`[Wayfindr] Failed to crawl ${currentUrl}:`, err);
     }
   }
 
+  const workerCount = Math.min(config.concurrency, 4);
+  const workers = Array.from({ length: workerCount }, () => worker());
+  await Promise.all(workers);
+
   console.log(`[Wayfindr] Crawled ${visitedUrls.size} pages, indexed ${allSections.length} sections for ${domain}`);
 
-  // Build BM25 engine
-  const engine = new ClientBM25Engine();
-  engine.index(allSections);
-  siteIndices.set(domain, { engine, sections: allSections, timestamp: Date.now() });
-
-  // Save to chrome.storage.local for fast cache
+  // Persist to storage
   try {
-    await chrome.storage.local.set({
-      [`wayfindr_${domain}`]: {
-        sections: allSections,
-        timestamp: Date.now()
-      }
-    });
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.set({
+        [`wayfindr_${domain}`]: {
+          sections: allSections,
+          timestamp: Date.now()
+        }
+      });
+    }
   } catch (err) {
     console.warn('[Wayfindr] Failed to save index to storage:', err);
   }
@@ -177,95 +274,81 @@ async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
   return allSections;
 }
 
-// Unified message handler supporting both Chrome callback & Firefox Promise returns
+/**
+ * Initiates crawl with coordinator concurrency locking
+ */
+function initiateCrawl(originUrl: string): Promise<SectionNode[]> {
+  const domain = new URL(originUrl).hostname;
+  return coordinator.registerActiveCrawl(domain, (signal) => {
+    return crawlDomain(originUrl, signal, coordinator.getConfig());
+  });
+}
+
+// Unified message handler supporting Chrome callbacks & Firefox Promises
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'PAGE_LOADED') {
     const url = message.url;
     const liveSections = (message.liveSections as SectionNode[]) || [];
     try {
       const domain = new URL(url).hostname;
-      if (isDomainAllowed(domain)) {
-        // Solution A: If content script sent live-rendered DOM sections, merge them immediately!
-        if (liveSections.length > 0) {
-          let currentSite = siteIndices.get(domain);
-          if (!currentSite) {
-            const engine = new ClientBM25Engine();
-            engine.index(liveSections);
-            siteIndices.set(domain, { engine, sections: liveSections, timestamp: Date.now() });
-          } else {
-            // Merge unique sections
-            const existingIds = new Set(currentSite.sections.map(s => s.id));
-            const newSections = liveSections.filter(s => !existingIds.has(s.id));
-            if (newSections.length > 0) {
-              const combined = [...currentSite.sections, ...newSections];
-              currentSite.engine.index(combined);
-              currentSite.sections = combined;
-              siteIndices.set(domain, currentSite);
-            }
-          }
-        }
-
-        if (!siteIndices.has(domain)) {
-          chrome.storage.local.get([`wayfindr_${domain}`], (res) => {
-            const cached = res ? res[`wayfindr_${domain}`] : null;
-            if (cached && (Date.now() - cached.timestamp < 24 * 60 * 60 * 1000)) {
-              const engine = new ClientBM25Engine();
-              const merged = [...cached.sections, ...liveSections.filter(ls => !cached.sections.some((cs: SectionNode) => cs.id === ls.id))];
-              engine.index(merged);
-              siteIndices.set(domain, { engine, sections: merged, timestamp: cached.timestamp });
-              console.log(`[Wayfindr] Loaded ${domain} index from local cache (${merged.length} sections)`);
-              sendResponse({ status: 'CACHED', count: merged.length });
-            } else {
-              crawlDomain(url).then(sections => {
-                const combined = [...sections, ...liveSections.filter(ls => !sections.some(cs => cs.id === ls.id))];
-                sendResponse({ status: 'CRAWLED', count: combined.length });
-              }).catch(err => {
-                console.error('[Wayfindr] Crawl failed:', err);
-                sendResponse({ status: 'ERROR', error: String(err) });
-              });
-            }
-          });
-          return true; // Keep channel open for async response
-        } else {
-          const site = siteIndices.get(domain);
-          sendResponse({ status: 'READY', count: site?.sections.length || 0 });
-          return false;
-        }
+      if (!isDomainAllowed(domain)) {
+        sendResponse({ status: 'IGNORED' });
+        return false;
       }
+
+      // Merge content script live DOM sections
+      if (liveSections.length > 0) {
+        coordinator.mergeLivePageSections(domain, url, liveSections);
+      }
+
+      coordinator.ensureIndexLoaded(domain).then(({ record, state }) => {
+        if (state === 'READY') {
+          sendResponse({ status: 'READY', count: record?.sections.length || 0 });
+        } else if (state === 'STALE') {
+          // Serve stale index instantly, trigger background refresh
+          initiateCrawl(url).catch(() => {});
+          sendResponse({ status: 'STALE', count: record?.sections.length || 0 });
+        } else if (state === 'INDEXING' || state === 'REINDEXING') {
+          sendResponse({ status: state, count: record?.sections.length || 0 });
+        } else {
+          // UNINDEXED
+          initiateCrawl(url)
+            .then(sections => {
+              sendResponse({ status: 'CRAWLED', count: sections.length });
+            })
+            .catch(err => {
+              sendResponse({ status: 'ERROR', error: String(err) });
+            });
+        }
+      });
+      return true; // Keep channel open for async response
     } catch (e) {
       console.error('[Wayfindr] Invalid URL in PAGE_LOADED:', e);
+      sendResponse({ status: 'ERROR' });
+      return false;
     }
-    sendResponse({ status: 'IGNORED' });
-    return false;
   }
 
   if (message.action === 'SEARCH_QUERY') {
     const { query, url } = message;
     try {
       const domain = new URL(url).hostname;
-      const site = siteIndices.get(domain);
 
-      if (!site) {
-        // If not in memory, check storage before declaring indexing
-        chrome.storage.local.get([`wayfindr_${domain}`], (res) => {
-          const cached = res ? res[`wayfindr_${domain}`] : null;
-          if (cached && cached.sections) {
-            const engine = new ClientBM25Engine();
-            engine.index(cached.sections);
-            siteIndices.set(domain, { engine, sections: cached.sections, timestamp: cached.timestamp });
-            const results = engine.search(query, url, 6);
-            sendResponse({ results, status: 'READY', indexedSectionsCount: cached.sections.length });
-          } else {
-            sendResponse({ results: [], status: 'INDEXING' });
-          }
+      coordinator.ensureIndexLoaded(domain).then(({ record, state }) => {
+        if (!record || record.sections.length === 0) {
+          sendResponse({ results: [], status: state, indexedSectionsCount: 0 });
+          return;
+        }
+
+        const results = record.engine.search(query, url, 6);
+        sendResponse({
+          results,
+          status: state,
+          indexedSectionsCount: record.sections.length
         });
-        return true; // Keep channel open
-      }
-
-      const results = site.engine.search(query, url, 6);
-      sendResponse({ results, status: 'READY', indexedSectionsCount: site.sections.length });
-      return false;
-    } catch (err) {
+      });
+      return true; // Keep channel open
+    } catch {
       sendResponse({ results: [], status: 'ERROR' });
       return false;
     }
@@ -273,19 +356,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === 'TRIGGER_REINDEX') {
     const { url } = message;
-    crawlDomain(url).then(sections => {
-      sendResponse({ status: 'DONE', sectionsCount: sections.length });
-    }).catch(err => {
-      console.error('[Wayfindr] Re-index failed:', err);
+    try {
+      const domain = new URL(url).hostname;
+      coordinator.cancelActiveCrawl(domain);
+      initiateCrawl(url)
+        .then(sections => {
+          sendResponse({ status: 'DONE', sectionsCount: sections.length });
+        })
+        .catch(err => {
+          sendResponse({ status: 'ERROR', error: String(err) });
+        });
+      return true;
+    } catch (err) {
       sendResponse({ status: 'ERROR', error: String(err) });
-    });
-    return true; // Keep channel open for async response
+      return false;
+    }
+  }
+
+  if (message.action === 'GET_STATE') {
+    const { url } = message;
+    try {
+      const domain = new URL(url).hostname;
+      const state = coordinator.getState(domain);
+      const record = coordinator.getSiteIndex(domain);
+      sendResponse({ state, count: record?.sections.length || 0 });
+      return false;
+    } catch {
+      sendResponse({ state: 'UNINDEXED', count: 0 });
+      return false;
+    }
   }
 
   return false;
 });
 
-// Handle commands API (e.g. Alt+K configured in manifest.json)
+// Handle commands API (Alt+K configured in manifest.json)
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-wayfindr') {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
