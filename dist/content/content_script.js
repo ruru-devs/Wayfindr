@@ -1,4 +1,16 @@
 (() => {
+  // src/engine/url_utils.ts
+  function isSafeNavigationUrl(url, baseUrl) {
+    if (!url || typeof url !== "string") return false;
+    try {
+      const base = baseUrl || (typeof window !== "undefined" && window.location?.href ? window.location.href : "http://localhost");
+      const parsed = new URL(url, base);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
+
   // src/engine/sectionizer.ts
   function extractSectionsFromDoc(doc, pageUrl, pageDocTitle) {
     const sections = [];
@@ -346,11 +358,11 @@
     clearTimeout(debounce);
     const q = searchInput.value.trim();
     if (!q) {
-      resultsContainer.innerHTML = `
-      <div style="padding: 16px; text-align: center; color: #94a3b8; font-size: 13px;">
-        Type an instruction or intent to instantly cross-navigate this website...
-      </div>
-    `;
+      resultsContainer.textContent = "";
+      const hint = document.createElement("div");
+      hint.style.cssText = "padding: 16px; text-align: center; color: #94a3b8; font-size: 13px;";
+      hint.textContent = "Type an instruction or intent to instantly cross-navigate this website...";
+      resultsContainer.appendChild(hint);
       return;
     }
     debounce = setTimeout(() => {
@@ -360,28 +372,48 @@
     }, 100);
   });
   function renderResults(results) {
-    resultsContainer.innerHTML = "";
+    resultsContainer.textContent = "";
     if (!results.length) {
-      resultsContainer.innerHTML = `
-      <div style="padding: 24px; text-align: center; color: #64748b; font-size: 13.5px;">
-        No destination matching your search was found across this website.
-      </div>
-    `;
+      const empty = document.createElement("div");
+      empty.style.cssText = "padding: 24px; text-align: center; color: #64748b; font-size: 13.5px;";
+      empty.textContent = "No destination matching your search was found across this website.";
+      resultsContainer.appendChild(empty);
       return;
     }
     results.forEach((res) => {
       const el = document.createElement("div");
       el.className = "item";
-      el.innerHTML = `
-      <div class="item-main">
-        <div class="item-page">${res.isCurrentPage ? "Current Page" : "Cross-Page Link"} \u203A ${res.pageTitle}</div>
-        <div class="item-title">${res.title}</div>
-        <div class="item-snippet">${res.snippet}</div>
-        ${res.metadata?.price ? `<div class="item-meta">\u{1F4B0} ${res.metadata.price}</div>` : ""}
-        ${res.metadata?.timings ? `<div class="item-meta">\u{1F552} ${res.metadata.timings}</div>` : ""}
-      </div>
-      <div class="action-badge">${res.isCurrentPage ? "Jump" : "Navigate"}</div>
-    `;
+      const itemMain = document.createElement("div");
+      itemMain.className = "item-main";
+      const itemPage = document.createElement("div");
+      itemPage.className = "item-page";
+      itemPage.textContent = `${res.isCurrentPage ? "Current Page" : "Cross-Page Link"} \u203A ${res.pageTitle || ""}`;
+      itemMain.appendChild(itemPage);
+      const itemTitle = document.createElement("div");
+      itemTitle.className = "item-title";
+      itemTitle.textContent = res.title || "";
+      itemMain.appendChild(itemTitle);
+      const itemSnippet = document.createElement("div");
+      itemSnippet.className = "item-snippet";
+      itemSnippet.textContent = res.snippet || "";
+      itemMain.appendChild(itemSnippet);
+      if (res.metadata?.price) {
+        const itemPrice = document.createElement("div");
+        itemPrice.className = "item-meta";
+        itemPrice.textContent = `\u{1F4B0} ${res.metadata.price}`;
+        itemMain.appendChild(itemPrice);
+      }
+      if (res.metadata?.timings) {
+        const itemTimings = document.createElement("div");
+        itemTimings.className = "item-meta";
+        itemTimings.textContent = `\u{1F552} ${res.metadata.timings}`;
+        itemMain.appendChild(itemTimings);
+      }
+      el.appendChild(itemMain);
+      const actionBadge = document.createElement("div");
+      actionBadge.className = "action-badge";
+      actionBadge.textContent = res.isCurrentPage ? "Jump" : "Navigate";
+      el.appendChild(actionBadge);
       el.addEventListener("click", () => {
         closePalette();
         if (res.isCurrentPage && res.anchorId) {
@@ -394,7 +426,11 @@
             return;
           }
         }
-        window.location.href = res.targetUrl;
+        if (isSafeNavigationUrl(res.targetUrl)) {
+          window.location.href = res.targetUrl;
+        } else {
+          console.warn("[Wayfindr] Blocked navigation to unsafe URL scheme:", res.targetUrl);
+        }
       });
       resultsContainer.appendChild(el);
     });

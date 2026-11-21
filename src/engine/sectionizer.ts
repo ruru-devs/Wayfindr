@@ -1,4 +1,5 @@
 import { SectionNode } from './types';
+import { isValidCrawlUrl } from './url_utils';
 
 /**
  * Parses raw HTML string or Document into distinct semantic sections,
@@ -203,8 +204,8 @@ export function extractValidInternalLinks(
 
       const resolved = new URL(rawHref, baseUrl);
       
-      // Must be same origin/domain
-      if (resolved.hostname !== originDomain && !resolved.hostname.endsWith(`.${originDomain}`)) {
+      // Must be valid internal domain/subdomain
+      if (!isValidCrawlUrl(resolved.href, originDomain)) {
         return;
       }
 

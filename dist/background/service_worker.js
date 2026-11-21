@@ -1,4 +1,35 @@
 (() => {
+  // src/engine/url_utils.ts
+  function isValidCrawlUrl(candidateUrl, targetDomain, allowSubdomains = true) {
+    if (!candidateUrl || typeof candidateUrl !== "string") return false;
+    if (!targetDomain || typeof targetDomain !== "string") return false;
+    try {
+      const parsed = new URL(candidateUrl);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return false;
+      }
+      if (parsed.username || parsed.password) {
+        return false;
+      }
+      const candidateHost = parsed.hostname.toLowerCase();
+      const cleanTargetDomain = targetDomain.toLowerCase().replace(/:\d+$/, "");
+      if (candidateHost === cleanTargetDomain) {
+        return true;
+      }
+      if (cleanTargetDomain.startsWith("www.")) {
+        const bareTarget = cleanTargetDomain.slice(4);
+        if (candidateHost === bareTarget) return true;
+        if (allowSubdomains && candidateHost.endsWith(`.${bareTarget}`)) return true;
+      } else {
+        if (candidateHost === `www.${cleanTargetDomain}`) return true;
+        if (allowSubdomains && candidateHost.endsWith(`.${cleanTargetDomain}`)) return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   // src/engine/sectionizer.ts
   function extractSectionsFromDoc(doc, pageUrl, pageDocTitle) {
     const sections = [];
@@ -146,7 +177,7 @@
           return;
         }
         const resolved = new URL(rawHref, baseUrl);
-        if (resolved.hostname !== originDomain && !resolved.hostname.endsWith(`.${originDomain}`)) {
+        if (!isValidCrawlUrl(resolved.href, originDomain)) {
           return;
         }
         if (ignoreExtRegex.test(resolved.pathname) || skipPathRegex.test(resolved.pathname)) {
@@ -296,7 +327,7 @@
         const lines = text.split("\n");
         for (const line of lines) {
           const match = line.match(/https?:\/\/[^\s\)]+/);
-          if (match && match[0].includes(domain)) {
+          if (match && isValidCrawlUrl(match[0], domain)) {
             seeds.push(match[0]);
           }
         }
@@ -314,7 +345,7 @@
         if (locMatches) {
           for (const locTag of locMatches) {
             const locUrl = locTag.replace(/<\/?loc>/g, "").trim();
-            if (locUrl.includes(domain) && !locUrl.endsWith(".xml")) {
+            if (isValidCrawlUrl(locUrl, domain) && !locUrl.endsWith(".xml")) {
               seeds.push(locUrl);
             }
           }
@@ -362,6 +393,10 @@
           cache: "force-cache"
         });
         if (!resp.ok) continue;
+        if (resp.url && !isValidCrawlUrl(resp.url, domain)) {
+          console.warn(`[Wayfindr] Crawl redirect to untrusted origin blocked: ${resp.url}`);
+          continue;
+        }
         const contentType = resp.headers.get("content-type") || "";
         if (!contentType.includes("text/html")) continue;
         const html = await resp.text();

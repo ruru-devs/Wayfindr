@@ -13,8 +13,7 @@
   ],
   "background": {
     "service_worker": "dist/background/service_worker.js",
-    "scripts": ["dist/background/service_worker.js"],
-    "type": "module"
+    "scripts": ["dist/background/service_worker.js"]
   },
   "browser_specific_settings": {
     "gecko": {

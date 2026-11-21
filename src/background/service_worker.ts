@@ -1,6 +1,7 @@
 import { SectionNode, CrawlJob } from '../engine/types';
 import { extractSectionsFromHtml, extractValidInternalLinks } from '../engine/sectionizer';
 import { ClientBM25Engine } from '../engine/bm25';
+import { isValidCrawlUrl } from '../engine/url_utils';
 
 // Domains to ignore (search engines, video feeds, social networks)
 const BLOCKED_DOMAINS = [
@@ -34,7 +35,7 @@ async function discoverSeedUrls(originUrl: string, domain: string): Promise<stri
       const lines = text.split('\n');
       for (const line of lines) {
         const match = line.match(/https?:\/\/[^\s\)]+/);
-        if (match && match[0].includes(domain)) {
+        if (match && isValidCrawlUrl(match[0], domain)) {
           seeds.push(match[0]);
         }
       }
@@ -53,7 +54,7 @@ async function discoverSeedUrls(originUrl: string, domain: string): Promise<stri
       if (locMatches) {
         for (const locTag of locMatches) {
           const locUrl = locTag.replace(/<\/?loc>/g, '').trim();
-          if (locUrl.includes(domain) && !locUrl.endsWith('.xml')) {
+          if (isValidCrawlUrl(locUrl, domain) && !locUrl.endsWith('.xml')) {
             seeds.push(locUrl);
           }
         }
@@ -122,6 +123,13 @@ async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
       });
 
       if (!resp.ok) continue;
+
+      // Validate redirect destination
+      if (resp.url && !isValidCrawlUrl(resp.url, domain)) {
+        console.warn(`[Wayfindr] Crawl redirect to untrusted origin blocked: ${resp.url}`);
+        continue;
+      }
+
       const contentType = resp.headers.get('content-type') || '';
       if (!contentType.includes('text/html')) continue;
 

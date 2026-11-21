@@ -1,5 +1,6 @@
 import { SearchResultItem } from '../engine/types';
 import { extractSectionsFromDoc } from '../engine/sectionizer';
+import { isSafeNavigationUrl } from '../engine/url_utils';
 
 /**
  * Content Script:
@@ -273,11 +274,11 @@ searchInput.addEventListener('input', () => {
   clearTimeout(debounce);
   const q = searchInput.value.trim();
   if (!q) {
-    resultsContainer.innerHTML = `
-      <div style="padding: 16px; text-align: center; color: #94a3b8; font-size: 13px;">
-        Type an instruction or intent to instantly cross-navigate this website...
-      </div>
-    `;
+    resultsContainer.textContent = '';
+    const hint = document.createElement('div');
+    hint.style.cssText = 'padding: 16px; text-align: center; color: #94a3b8; font-size: 13px;';
+    hint.textContent = 'Type an instruction or intent to instantly cross-navigate this website...';
+    resultsContainer.appendChild(hint);
     return;
   }
 
@@ -289,29 +290,57 @@ searchInput.addEventListener('input', () => {
 });
 
 function renderResults(results: SearchResultItem[]) {
-  resultsContainer.innerHTML = '';
+  resultsContainer.textContent = '';
   if (!results.length) {
-    resultsContainer.innerHTML = `
-      <div style="padding: 24px; text-align: center; color: #64748b; font-size: 13.5px;">
-        No destination matching your search was found across this website.
-      </div>
-    `;
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding: 24px; text-align: center; color: #64748b; font-size: 13.5px;';
+    empty.textContent = 'No destination matching your search was found across this website.';
+    resultsContainer.appendChild(empty);
     return;
   }
 
   results.forEach(res => {
     const el = document.createElement('div');
     el.className = 'item';
-    el.innerHTML = `
-      <div class="item-main">
-        <div class="item-page">${res.isCurrentPage ? 'Current Page' : 'Cross-Page Link'} › ${res.pageTitle}</div>
-        <div class="item-title">${res.title}</div>
-        <div class="item-snippet">${res.snippet}</div>
-        ${res.metadata?.price ? `<div class="item-meta">💰 ${res.metadata.price}</div>` : ''}
-        ${res.metadata?.timings ? `<div class="item-meta">🕒 ${res.metadata.timings}</div>` : ''}
-      </div>
-      <div class="action-badge">${res.isCurrentPage ? 'Jump' : 'Navigate'}</div>
-    `;
+
+    const itemMain = document.createElement('div');
+    itemMain.className = 'item-main';
+
+    const itemPage = document.createElement('div');
+    itemPage.className = 'item-page';
+    itemPage.textContent = `${res.isCurrentPage ? 'Current Page' : 'Cross-Page Link'} › ${res.pageTitle || ''}`;
+    itemMain.appendChild(itemPage);
+
+    const itemTitle = document.createElement('div');
+    itemTitle.className = 'item-title';
+    itemTitle.textContent = res.title || '';
+    itemMain.appendChild(itemTitle);
+
+    const itemSnippet = document.createElement('div');
+    itemSnippet.className = 'item-snippet';
+    itemSnippet.textContent = res.snippet || '';
+    itemMain.appendChild(itemSnippet);
+
+    if (res.metadata?.price) {
+      const itemPrice = document.createElement('div');
+      itemPrice.className = 'item-meta';
+      itemPrice.textContent = `💰 ${res.metadata.price}`;
+      itemMain.appendChild(itemPrice);
+    }
+
+    if (res.metadata?.timings) {
+      const itemTimings = document.createElement('div');
+      itemTimings.className = 'item-meta';
+      itemTimings.textContent = `🕒 ${res.metadata.timings}`;
+      itemMain.appendChild(itemTimings);
+    }
+
+    el.appendChild(itemMain);
+
+    const actionBadge = document.createElement('div');
+    actionBadge.className = 'action-badge';
+    actionBadge.textContent = res.isCurrentPage ? 'Jump' : 'Navigate';
+    el.appendChild(actionBadge);
 
     el.addEventListener('click', () => {
       closePalette();
@@ -325,7 +354,11 @@ function renderResults(results: SearchResultItem[]) {
           return;
         }
       }
-      window.location.href = res.targetUrl;
+      if (isSafeNavigationUrl(res.targetUrl)) {
+        window.location.href = res.targetUrl;
+      } else {
+        console.warn('[Wayfindr] Blocked navigation to unsafe URL scheme:', res.targetUrl);
+      }
     });
 
     resultsContainer.appendChild(el);
