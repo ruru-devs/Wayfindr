@@ -54,7 +54,7 @@ flowchart TD
 
 ## 🛠️ Installation & Testing (Developer Mode)
 
-### In Google Chrome / Brave / Edge / Chromium:
+### In Chromium Browsers (Google Chrome / Brave / Edge / Opera):
 1. Open your browser and navigate to:
    - Chrome: `chrome://extensions`
    - Brave: `brave://extensions`
@@ -66,6 +66,12 @@ flowchart TD
    /home/Rurushu/Projects/WarpWeb_Ext
    ```
 5. Wayfindr is now active!
+
+### In Mozilla Firefox:
+1. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`.
+2. Click **"Load Temporary Add-on..."**.
+3. Select `manifest.json` inside the `WarpWeb_Ext` folder.
+4. Wayfindr will load as an event-driven background script compatible with Firefox MV3.
 
 ---
 
