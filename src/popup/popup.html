@@ -1,79 +1,258 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <title>Wayfindr</title>
   <style>
-    body {
-      width: 280px;
-      padding: 16px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    * {
+      box-sizing: border-box;
       margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body {
+      width: 300px;
+      padding: 16px;
       background: #0f172a;
       color: #f8fafc;
+      font-size: 13px;
     }
     .header {
       display: flex;
       align-items: center;
-      gap: 8px;
+      justify-content: space-between;
       border-bottom: 1px solid #1e293b;
       padding-bottom: 12px;
     }
-    .title {
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .logo {
       font-weight: 800;
       font-size: 16px;
       color: #38bdf8;
+      letter-spacing: -0.02em;
     }
-    .status-box {
-      margin-top: 14px;
+    .version {
+      font-size: 10px;
       background: #1e293b;
-      padding: 10px;
+      color: #94a3b8;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .card {
+      margin-top: 12px;
+      background: #1e293b;
+      border: 1px solid #334155;
       border-radius: 8px;
+      padding: 12px;
+    }
+    .domain-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .domain-name {
+      font-weight: 600;
+      color: #f1f5f9;
+      font-size: 12.5px;
+      max-width: 170px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .state-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 9999px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .state-badge.ready {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .state-badge.indexing, .state-badge.reindexing {
+      background: rgba(56, 189, 248, 0.2);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.4);
+    }
+    .state-badge.stale {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+    .state-badge.unindexed {
+      background: rgba(148, 163, 184, 0.2);
+      color: #94a3b8;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+    }
+    .state-badge.disabled {
+      background: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+    .count-text {
+      color: #94a3b8;
+      font-size: 11.5px;
+      margin-top: 2px;
+    }
+    .toggle-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #334155;
+    }
+    .toggle-label {
       font-size: 12px;
+      color: #cbd5e1;
+    }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 36px;
+      height: 20px;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background-color: #475569;
+      transition: .2s;
+      border-radius: 20px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 14px;
+      width: 14px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .2s;
+      border-radius: 50%;
+    }
+    input:checked + .slider {
+      background-color: #0284c7;
+    }
+    input:checked + .slider:before {
+      transform: translateX(16px);
     }
     .key-hint {
-      margin-top: 14px;
-      font-size: 12px;
+      margin-top: 12px;
+      font-size: 11.5px;
       color: #94a3b8;
       text-align: center;
     }
     .kbd {
       background: #334155;
       color: #f1f5f9;
-      padding: 2px 6px;
+      padding: 1.5px 5px;
       border-radius: 4px;
       font-weight: 600;
+      font-size: 11px;
+    }
+    .btn-group {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      margin-top: 12px;
     }
     .btn {
-      margin-top: 12px;
       width: 100%;
-      background: #0284c7;
-      color: #fff;
       border: none;
-      padding: 8px;
+      padding: 8px 12px;
       border-radius: 6px;
       font-size: 12px;
       font-weight: 600;
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: background 0.15s ease;
+    }
+    .btn-primary {
+      background: #0284c7;
+      color: #ffffff;
+    }
+    .btn-primary:hover {
+      background: #0369a1;
+    }
+    .btn-secondary {
+      background: #1e293b;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+    }
+    .btn-secondary:hover {
+      background: #334155;
+    }
+    .btn-danger {
+      background: #1e293b;
+      color: #f87171;
+      border: 1px solid #7f1d1d;
+    }
+    .btn-danger:hover {
+      background: #450a0a;
+    }
+    .status-msg {
+      font-size: 11px;
+      text-align: center;
+      color: #38bdf8;
+      min-height: 16px;
+      margin-top: 8px;
     }
   </style>
 </head>
 <body>
   <div class="header">
-    <span class="title">Wayfindr</span>
-    <span style="font-size: 11px; color: #94a3b8;">Intent Browser</span>
+    <div class="brand">
+      <span class="logo">Wayfindr</span>
+    </div>
+    <span class="version">v1.0.0</span>
   </div>
 
-  <div class="status-box">
-    <div id="domain">Detecting site...</div>
-    <div id="pageCount" style="color: #38bdf8; margin-top: 4px; font-weight: 600;">Ready</div>
+  <div class="card">
+    <div class="domain-row">
+      <span class="domain-name" id="domain" title="Current Domain">Detecting site...</span>
+      <span class="state-badge unindexed" id="stateBadge">UNINDEXED</span>
+    </div>
+    <div class="count-text" id="pageCount">Connecting to indexer...</div>
+
+    <div class="toggle-row">
+      <span class="toggle-label">Active on this site</span>
+      <label class="switch">
+        <input type="checkbox" id="domainToggle" checked aria-label="Toggle Wayfindr on this domain">
+        <span class="slider"></span>
+      </label>
+    </div>
   </div>
 
   <div class="key-hint">
-    Press <span class="kbd">Alt+K</span> or <span class="kbd">Ctrl+K</span> to navigate
+    Press <span class="kbd">Alt+K</span> or <span class="kbd">Ctrl+K</span> to search
   </div>
 
-  <button id="openPaletteBtn" class="btn" style="background: #2563eb; margin-top: 10px;">🔍 Open Search Bar</button>
-  <button id="reindexBtn" class="btn" style="background: #334155; margin-top: 6px;">⚡ Force Re-index Site</button>
+  <div class="btn-group">
+    <button id="openPaletteBtn" class="btn btn-primary">🔍 Open Search Palette</button>
+    <button id="reindexBtn" class="btn btn-secondary">⚡ Force Re-index Site</button>
+    <button id="clearIndexBtn" class="btn btn-danger">🗑️ Clear Index for Site</button>
+  </div>
+
+  <div class="status-msg" id="statusMsg"></div>
 
   <script src="popup.js"></script>
 </body>

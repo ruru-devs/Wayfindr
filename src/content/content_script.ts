@@ -52,11 +52,24 @@ styleTag.textContent = `
 `;
 document.head.appendChild(styleTag);
 
-// Initialize on page load: Solution A - Extract live DOM sections directly from active tab
+async function isDomainEnabled(): Promise<boolean> {
+  try {
+    const domain = window.location.hostname;
+    const res = await chrome.storage.local.get([`wayfindr_disabled_${domain}`]);
+    return !res[`wayfindr_disabled_${domain}`];
+  } catch {
+    return true;
+  }
+}
+
+// Initialize on page load: Extract live DOM sections directly from active tab
 checkAndHighlightTarget();
 
-function extractAndSendLiveDOM() {
+async function extractAndSendLiveDOM() {
   try {
+    const enabled = await isDomainEnabled();
+    if (!enabled) return;
+
     const liveSections = extractSectionsFromDoc(document, window.location.href, document.title);
     chrome.runtime.sendMessage({
       action: 'PAGE_LOADED',
@@ -77,6 +90,58 @@ const host = document.createElement('div');
 host.id = 'wayfindr-extension-root';
 const shadow = host.attachShadow({ mode: 'open' });
 document.documentElement.appendChild(host);
+
+// SPA Route & DOM Mutation Observer
+let lastTrackedUrl = window.location.href;
+let domMutationTimeout: any = null;
+
+function onLocationChange() {
+  if (window.location.href !== lastTrackedUrl) {
+    lastTrackedUrl = window.location.href;
+    checkAndHighlightTarget();
+    extractAndSendLiveDOM();
+  }
+}
+
+if (typeof history !== 'undefined') {
+  const nativePushState = history.pushState;
+  if (typeof nativePushState === 'function') {
+    history.pushState = function(...args) {
+      const res = nativePushState.apply(this, args);
+      onLocationChange();
+      return res;
+    };
+  }
+
+  const nativeReplaceState = history.replaceState;
+  if (typeof nativeReplaceState === 'function') {
+    history.replaceState = function(...args) {
+      const res = nativeReplaceState.apply(this, args);
+      onLocationChange();
+      return res;
+    };
+  }
+}
+
+window.addEventListener('popstate', onLocationChange);
+
+// Debounced MutationObserver for dynamic SPAs (800ms debounce; ignores internal Shadow DOM mutations)
+if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
+  const domObserver = new MutationObserver((mutations) => {
+    const hasExternalChanges = mutations.some(m => !host.contains(m.target as Node));
+    if (!hasExternalChanges) return;
+
+    if (domMutationTimeout) clearTimeout(domMutationTimeout);
+    domMutationTimeout = setTimeout(() => {
+      extractAndSendLiveDOM();
+    }, 800);
+  });
+
+  const observeTarget = document.body || document.documentElement;
+  if (observeTarget) {
+    domObserver.observe(observeTarget, { childList: true, subtree: true });
+  }
+}
 
 const shadowStyle = document.createElement('style');
 shadowStyle.textContent = `
@@ -157,10 +222,14 @@ shadowStyle.textContent = `
     border: 1px solid #f1f5f9;
     transition: all 0.12s ease;
   }
-  .item:hover {
-    background: #f8fafc;
-    border-color: #cbd5e1;
+  .item:hover, .item.selected {
+    background: #f0f9ff;
+    border-color: #38bdf8;
     transform: translateX(2px);
+  }
+  .item.selected {
+    outline: 2px solid #0284c7;
+    outline-offset: -1px;
   }
   .item-main {
     flex: 1;
@@ -212,16 +281,26 @@ shadow.appendChild(shadowStyle);
 
 const backdrop = document.createElement('div');
 backdrop.className = 'backdrop';
+backdrop.setAttribute('role', 'dialog');
+backdrop.setAttribute('aria-modal', 'true');
+backdrop.setAttribute('aria-label', 'Wayfindr site intent navigation');
+
 backdrop.innerHTML = `
   <div class="modal">
     <div class="search-bar">
       <svg width="18" height="18" fill="none" stroke="#64748b" stroke-width="2" viewBox="0 0 24 24">
         <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
       </svg>
-      <input type="text" class="search-input" placeholder="Type intent (e.g. 'return policy', 'dr sharma timings', 'specs')..." />
+      <input type="text" class="search-input" 
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded="false"
+        aria-controls="wayfindr-results"
+        aria-activedescendant=""
+        placeholder="Type intent (e.g. 'return policy', 'dr sharma timings', 'specs')..." />
       <span class="badge">ESC</span>
     </div>
-    <div class="results">
+    <div class="results" id="wayfindr-results" role="listbox" aria-label="Navigation destinations">
       <div style="padding: 16px; text-align: center; color: #94a3b8; font-size: 13px;">
         Type an instruction or intent to instantly cross-navigate this website...
       </div>
@@ -236,6 +315,28 @@ shadow.appendChild(backdrop);
 
 const searchInput = backdrop.querySelector('.search-input') as HTMLInputElement;
 const resultsContainer = backdrop.querySelector('.results') as HTMLDivElement;
+
+let previousFocusedElement: HTMLElement | null = null;
+let selectedIndex = -1;
+let currentResultElements: HTMLElement[] = [];
+let latestRequestId = 0;
+
+function updateSelection() {
+  currentResultElements.forEach((el, idx) => {
+    if (idx === selectedIndex) {
+      el.classList.add('selected');
+      el.setAttribute('aria-selected', 'true');
+      searchInput.setAttribute('aria-activedescendant', el.id);
+      el.scrollIntoView({ block: 'nearest' });
+    } else {
+      el.classList.remove('selected');
+      el.setAttribute('aria-selected', 'false');
+    }
+  });
+  if (selectedIndex === -1) {
+    searchInput.setAttribute('aria-activedescendant', '');
+  }
+}
 
 function updateIndexingStatus(state?: string, count?: number) {
   const statusEl = backdrop.querySelector('#footer-status');
@@ -254,8 +355,16 @@ function updateIndexingStatus(state?: string, count?: number) {
   }
 }
 
-function openPalette() {
+async function openPalette() {
+  const enabled = await isDomainEnabled();
+  if (!enabled) {
+    console.log('[Wayfindr] Extension is disabled on this domain.');
+    return;
+  }
+
+  previousFocusedElement = document.activeElement as HTMLElement;
   backdrop.classList.add('open');
+  searchInput.setAttribute('aria-expanded', 'true');
   searchInput.focus();
   try {
     chrome.runtime.sendMessage({ action: 'GET_STATE', url: window.location.href }, (resp) => {
@@ -266,11 +375,46 @@ function openPalette() {
 
 function closePalette() {
   backdrop.classList.remove('open');
+  searchInput.setAttribute('aria-expanded', 'false');
+  searchInput.setAttribute('aria-activedescendant', '');
+  selectedIndex = -1;
+  updateSelection();
+  if (previousFocusedElement && typeof previousFocusedElement.focus === 'function') {
+    previousFocusedElement.focus();
+  }
 }
 
 function togglePalette() {
   backdrop.classList.contains('open') ? closePalette() : openPalette();
 }
+
+// Keyboard navigation in search input (ArrowUp, ArrowDown, Enter, Tab)
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (currentResultElements.length > 0) {
+      selectedIndex = (selectedIndex + 1) % currentResultElements.length;
+      updateSelection();
+    }
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (currentResultElements.length > 0) {
+      selectedIndex = (selectedIndex - 1 + currentResultElements.length) % currentResultElements.length;
+      updateSelection();
+    }
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (selectedIndex >= 0 && selectedIndex < currentResultElements.length) {
+      currentResultElements[selectedIndex].click();
+    } else if (currentResultElements.length > 0) {
+      currentResultElements[0].click();
+    }
+  } else if (e.key === 'Tab') {
+    // Focus trap inside modal
+    e.preventDefault();
+    searchInput.focus();
+  }
+});
 
 // 1. Listen for background command (Alt+K or configured in browser)
 chrome.runtime.onMessage.addListener((msg, sender, sendResp) => {
@@ -282,7 +426,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResp) => {
 });
 
 // 2. Direct DOM key bindings (Capture phase to precede browser/page handlers)
-// Dedicated hotkey: Alt+K (and Ctrl+K also supported)
 window.addEventListener('keydown', (e) => {
   const isK = e.key.toLowerCase() === 'k' || e.code === 'KeyK';
   const isAlt = e.altKey;
@@ -314,11 +457,17 @@ searchInput.addEventListener('input', () => {
     hint.style.cssText = 'padding: 16px; text-align: center; color: #94a3b8; font-size: 13px;';
     hint.textContent = 'Type an instruction or intent to instantly cross-navigate this website...';
     resultsContainer.appendChild(hint);
+    currentResultElements = [];
+    selectedIndex = -1;
+    updateSelection();
     return;
   }
 
+  const reqId = ++latestRequestId;
   debounce = setTimeout(() => {
     chrome.runtime.sendMessage({ action: 'SEARCH_QUERY', query: q, url: window.location.href }, (resp) => {
+      // Stale response rejection: drop out-of-order previous responses
+      if (reqId !== latestRequestId) return;
       if (resp?.status) updateIndexingStatus(resp.status, resp.indexedSectionsCount);
       renderResults(resp?.results || []);
     });
@@ -327,17 +476,24 @@ searchInput.addEventListener('input', () => {
 
 function renderResults(results: SearchResultItem[]) {
   resultsContainer.textContent = '';
+  currentResultElements = [];
+  selectedIndex = -1;
+
   if (!results.length) {
     const empty = document.createElement('div');
     empty.style.cssText = 'padding: 24px; text-align: center; color: #64748b; font-size: 13.5px;';
     empty.textContent = 'No destination matching your search was found across this website.';
     resultsContainer.appendChild(empty);
+    updateSelection();
     return;
   }
 
-  results.forEach(res => {
+  results.forEach((res, idx) => {
     const el = document.createElement('div');
     el.className = 'item';
+    el.id = `wayfindr-opt-${idx}`;
+    el.setAttribute('role', 'option');
+    el.setAttribute('aria-selected', 'false');
 
     const itemMain = document.createElement('div');
     itemMain.className = 'item-main';
@@ -432,6 +588,13 @@ function renderResults(results: SearchResultItem[]) {
       }
     });
 
+    currentResultElements.push(el);
     resultsContainer.appendChild(el);
   });
+
+  // Select the top result by default so Enter triggers immediate navigation
+  if (currentResultElements.length > 0) {
+    selectedIndex = 0;
+    updateSelection();
+  }
 }

@@ -1040,12 +1040,29 @@
       const { url } = message;
       try {
         const domain = new URL(url).hostname;
-        const state = coordinator.getState(domain);
-        const record = coordinator.getSiteIndex(domain);
-        sendResponse({ state, count: record?.sections.length || 0 });
-        return false;
+        coordinator.ensureIndexLoaded(domain).then(({ record, state }) => {
+          sendResponse({ state, count: record?.sections.length || 0 });
+        }).catch(() => {
+          sendResponse({ state: coordinator.getState(domain), count: 0 });
+        });
+        return true;
       } catch {
         sendResponse({ state: "UNINDEXED", count: 0 });
+        return false;
+      }
+    }
+    if (message.action === "CLEAR_INDEX") {
+      const domain = message.domain;
+      try {
+        coordinator.cancelActiveCrawl(domain);
+        coordinator.setState(domain, "UNINDEXED");
+        if (typeof chrome !== "undefined" && chrome.storage?.local) {
+          chrome.storage.local.remove([`wayfindr_${domain}`, `wayfindr_state_${domain}`]);
+        }
+        sendResponse({ status: "CLEARED" });
+        return false;
+      } catch (e) {
+        sendResponse({ status: "ERROR", error: String(e) });
         return false;
       }
     }
