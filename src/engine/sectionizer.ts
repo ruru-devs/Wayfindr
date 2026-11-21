@@ -4,30 +4,50 @@ import { SectionNode } from './types';
  * Parses raw HTML string or Document into distinct semantic sections,
  * extracting anchor IDs, action links, prices, and timings.
  */
-export function extractSectionsFromHtml(
-  htmlContent: string,
+/**
+ * Parses raw HTML string or a live Document root into distinct semantic sections,
+ * extracting anchor IDs, action links, navigation menus, prices, and timings.
+ */
+export function extractSectionsFromDoc(
+  doc: Document | Element,
   pageUrl: string,
   pageDocTitle: string
 ): SectionNode[] {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(htmlContent, 'text/html');
-
-  // Strip noise
-  doc.querySelectorAll('script, style, svg, noscript, iframe, nav, footer').forEach(el => el.remove());
-
+  // Clone or work on elements without deleting nav/footer so links & menu sections are preserved
   const sections: SectionNode[] = [];
   const candidates: HTMLElement[] = [];
 
-  // Find explicit sections, articles, or divs with IDs
-  doc.querySelectorAll('section, article, div[id], main, [role="region"]').forEach(el => {
-    candidates.push(el as HTMLElement);
+  // 1. Discover menu & navigation items (Solution C: preserve menus & categories)
+  doc.querySelectorAll('nav a[href], header a[href], [role="navigation"] a[href]').forEach(a => {
+    const text = (a.textContent || '').trim().replace(/\s+/g, ' ');
+    const href = a.getAttribute('href');
+    if (text.length >= 2 && text.length <= 60 && href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+      try {
+        const fullUrl = new URL(href, pageUrl).href;
+        sections.push({
+          id: `menu_${sections.length + 1}`,
+          url: fullUrl,
+          pageTitle: `${pageDocTitle} › Navigation`,
+          title: text,
+          snippet: `Menu link: ${text} on ${pageDocTitle}`,
+          actionLabel: 'Explore'
+        });
+      } catch {}
+    }
   });
 
-  // If few semantic elements, group around headings
+  // 2. Discover semantic body blocks (excluding raw scripts/styles)
+  doc.querySelectorAll('section, article, div[id], main, [role="region"], [role="main"]').forEach(el => {
+    // Skip if it's nav or script/style
+    if (!el.closest('nav') && !['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName)) {
+      candidates.push(el as HTMLElement);
+    }
+  });
+
   if (candidates.length < 3) {
     doc.querySelectorAll('h1, h2, h3').forEach(h => {
       const parent = h.parentElement;
-      if (parent && !candidates.includes(parent)) {
+      if (parent && !candidates.includes(parent) && !parent.closest('nav')) {
         candidates.push(parent as HTMLElement);
       }
     });
@@ -35,7 +55,6 @@ export function extractSectionsFromHtml(
 
   let idx = 0;
   for (const block of candidates) {
-    // Firefox XML/DOM documents can return undefined for innerText; textContent is standard
     const text = (block.textContent || '').trim().replace(/\s+/g, ' ');
     if (text.length < 25) continue;
 
@@ -55,13 +74,11 @@ export function extractSectionsFromHtml(
     if (actionUrl && !actionUrl.startsWith('http') && !actionUrl.startsWith('#')) {
       try {
         actionUrl = new URL(actionUrl, pageUrl).href;
-      } catch {
-        // Keep as-is
-      }
+      } catch {}
     }
 
     // Metadata extraction
-    const priceMatch = text.match(/(?:₹|\$|USD|INR|Rs\.?)\s*([\d,]+(?:\.\d+)?)/i);
+    const priceMatch = text.match(/(?:₹|\$|USD|INR|EUR|Rs\.?)\s*([\d,]+(?:\.\d+)?)/i);
     const timingsMatch = text.match(/(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/);
 
     idx++;
@@ -109,11 +126,19 @@ export function extractSectionsFromHtml(
         }
       }
     });
-  } catch {
-    // Ignore JSON-LD parse errors
-  }
+  } catch {}
 
   return sections;
+}
+
+export function extractSectionsFromHtml(
+  htmlContent: string,
+  pageUrl: string,
+  pageDocTitle: string
+): SectionNode[] {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(htmlContent, 'text/html');
+  return extractSectionsFromDoc(doc, pageUrl, pageDocTitle);
 }
 
 /**

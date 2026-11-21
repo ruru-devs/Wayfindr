@@ -1,4 +1,109 @@
 (() => {
+  // src/engine/sectionizer.ts
+  function extractSectionsFromDoc(doc, pageUrl, pageDocTitle) {
+    const sections = [];
+    const candidates = [];
+    doc.querySelectorAll('nav a[href], header a[href], [role="navigation"] a[href]').forEach((a) => {
+      const text = (a.textContent || "").trim().replace(/\s+/g, " ");
+      const href = a.getAttribute("href");
+      if (text.length >= 2 && text.length <= 60 && href && !href.startsWith("#") && !href.startsWith("javascript:")) {
+        try {
+          const fullUrl = new URL(href, pageUrl).href;
+          sections.push({
+            id: `menu_${sections.length + 1}`,
+            url: fullUrl,
+            pageTitle: `${pageDocTitle} \u203A Navigation`,
+            title: text,
+            snippet: `Menu link: ${text} on ${pageDocTitle}`,
+            actionLabel: "Explore"
+          });
+        } catch {
+        }
+      }
+    });
+    doc.querySelectorAll('section, article, div[id], main, [role="region"], [role="main"]').forEach((el) => {
+      if (!el.closest("nav") && !["SCRIPT", "STYLE", "NOSCRIPT", "SVG"].includes(el.tagName)) {
+        candidates.push(el);
+      }
+    });
+    if (candidates.length < 3) {
+      doc.querySelectorAll("h1, h2, h3").forEach((h) => {
+        const parent = h.parentElement;
+        if (parent && !candidates.includes(parent) && !parent.closest("nav")) {
+          candidates.push(parent);
+        }
+      });
+    }
+    let idx = 0;
+    for (const block of candidates) {
+      const text = (block.textContent || "").trim().replace(/\s+/g, " ");
+      if (text.length < 25) continue;
+      const heading = block.querySelector("h1, h2, h3, h4, h5");
+      let title = (heading?.textContent || "").trim();
+      if (!title) {
+        const strong = block.querySelector("strong, b");
+        title = (strong?.textContent || "").trim() || text.split(/\s+/).slice(0, 6).join(" ");
+      }
+      const anchorId = block.id || heading?.id || "";
+      const actionEl = block.querySelector("a, button");
+      let actionLabel = (actionEl?.textContent || "").trim();
+      let actionUrl = actionEl?.getAttribute("href") || void 0;
+      if (actionUrl && !actionUrl.startsWith("http") && !actionUrl.startsWith("#")) {
+        try {
+          actionUrl = new URL(actionUrl, pageUrl).href;
+        } catch {
+        }
+      }
+      const priceMatch = text.match(/(?:₹|\$|USD|INR|EUR|Rs\.?)\s*([\d,]+(?:\.\d+)?)/i);
+      const timingsMatch = text.match(/(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/);
+      idx++;
+      sections.push({
+        id: `sec_${idx}_${anchorId || "block"}`,
+        url: pageUrl,
+        pageTitle: pageDocTitle || "Page",
+        anchorId: anchorId || void 0,
+        title: title.slice(0, 100),
+        snippet: text.slice(0, 200).replace(/\s+/g, " "),
+        actionLabel: actionLabel && actionLabel.length < 30 ? actionLabel : void 0,
+        actionUrl,
+        metadata: {
+          price: priceMatch ? priceMatch[0] : void 0,
+          timings: timingsMatch ? timingsMatch[0] : void 0
+        }
+      });
+    }
+    try {
+      const jsonLdScripts = doc.querySelectorAll('script[type="application/ld+json"]');
+      jsonLdScripts.forEach((script) => {
+        const parsed = JSON.parse(script.textContent || "{}");
+        const items = Array.isArray(parsed) ? parsed : parsed["@graph"] || [parsed];
+        for (const item of items) {
+          if (!item || !item["@type"]) continue;
+          const schemaType = String(item["@type"]);
+          const schemaName = item.name || item.headline || item.title || "";
+          const schemaDesc = item.description || item.articleBody || "";
+          if (schemaName) {
+            idx++;
+            sections.push({
+              id: `sec_schema_${idx}`,
+              url: pageUrl,
+              pageTitle: `${schemaType}: ${schemaName}`,
+              title: schemaName.slice(0, 100),
+              snippet: (schemaDesc || `${schemaType} on ${pageDocTitle}`).slice(0, 200),
+              metadata: {
+                schemaType,
+                price: item.price || item.offers?.price,
+                timings: item.openingHours || item.openingHoursSpecification ? JSON.stringify(item.openingHours || item.openingHoursSpecification) : void 0
+              }
+            });
+          }
+        }
+      });
+    } catch {
+    }
+    return sections;
+  }
+
   // src/content/content_script.ts
   function checkAndHighlightTarget() {
     const hash = window.location.hash ? window.location.hash.substring(1) : "";
@@ -27,7 +132,20 @@
 `;
   document.head.appendChild(styleTag);
   checkAndHighlightTarget();
-  chrome.runtime.sendMessage({ action: "PAGE_LOADED", url: window.location.href });
+  function extractAndSendLiveDOM() {
+    try {
+      const liveSections = extractSectionsFromDoc(document, window.location.href, document.title);
+      chrome.runtime.sendMessage({
+        action: "PAGE_LOADED",
+        url: window.location.href,
+        liveSections
+      });
+    } catch (err) {
+      chrome.runtime.sendMessage({ action: "PAGE_LOADED", url: window.location.href });
+    }
+  }
+  extractAndSendLiveDOM();
+  setTimeout(extractAndSendLiveDOM, 1200);
   var host = document.createElement("div");
   host.id = "wayfindr-extension-root";
   var shadow = host.attachShadow({ mode: "open" });

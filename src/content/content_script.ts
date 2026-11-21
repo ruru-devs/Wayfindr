@@ -1,4 +1,5 @@
 import { SearchResultItem } from '../engine/types';
+import { extractSectionsFromDoc } from '../engine/sectionizer';
 
 /**
  * Content Script:
@@ -37,9 +38,25 @@ styleTag.textContent = `
 `;
 document.head.appendChild(styleTag);
 
-// Initialize on page load
+// Initialize on page load: Solution A - Extract live DOM sections directly from active tab
 checkAndHighlightTarget();
-chrome.runtime.sendMessage({ action: 'PAGE_LOADED', url: window.location.href });
+
+function extractAndSendLiveDOM() {
+  try {
+    const liveSections = extractSectionsFromDoc(document, window.location.href, document.title);
+    chrome.runtime.sendMessage({
+      action: 'PAGE_LOADED',
+      url: window.location.href,
+      liveSections: liveSections
+    });
+  } catch (err) {
+    chrome.runtime.sendMessage({ action: 'PAGE_LOADED', url: window.location.href });
+  }
+}
+
+// Extract immediately and again after 1.2s to capture client-side hydrated SPA elements (React/Next.js/AEM)
+extractAndSendLiveDOM();
+setTimeout(extractAndSendLiveDOM, 1200);
 
 // Shadow DOM Overlay for Ctrl+K
 const host = document.createElement('div');

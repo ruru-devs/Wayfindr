@@ -173,21 +173,44 @@ async function crawlDomain(originUrl: string): Promise<SectionNode[]> {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'PAGE_LOADED') {
     const url = message.url;
+    const liveSections = (message.liveSections as SectionNode[]) || [];
     try {
       const domain = new URL(url).hostname;
       if (isDomainAllowed(domain)) {
+        // Solution A: If content script sent live-rendered DOM sections, merge them immediately!
+        if (liveSections.length > 0) {
+          let currentSite = siteIndices.get(domain);
+          if (!currentSite) {
+            const engine = new ClientBM25Engine();
+            engine.index(liveSections);
+            siteIndices.set(domain, { engine, sections: liveSections, timestamp: Date.now() });
+          } else {
+            // Merge unique sections
+            const existingIds = new Set(currentSite.sections.map(s => s.id));
+            const newSections = liveSections.filter(s => !existingIds.has(s.id));
+            if (newSections.length > 0) {
+              const combined = [...currentSite.sections, ...newSections];
+              currentSite.engine.index(combined);
+              currentSite.sections = combined;
+              siteIndices.set(domain, currentSite);
+            }
+          }
+        }
+
         if (!siteIndices.has(domain)) {
           chrome.storage.local.get([`wayfindr_${domain}`], (res) => {
             const cached = res ? res[`wayfindr_${domain}`] : null;
             if (cached && (Date.now() - cached.timestamp < 24 * 60 * 60 * 1000)) {
               const engine = new ClientBM25Engine();
-              engine.index(cached.sections);
-              siteIndices.set(domain, { engine, sections: cached.sections, timestamp: cached.timestamp });
-              console.log(`[Wayfindr] Loaded ${domain} index from local cache (${cached.sections.length} sections)`);
-              sendResponse({ status: 'CACHED', count: cached.sections.length });
+              const merged = [...cached.sections, ...liveSections.filter(ls => !cached.sections.some((cs: SectionNode) => cs.id === ls.id))];
+              engine.index(merged);
+              siteIndices.set(domain, { engine, sections: merged, timestamp: cached.timestamp });
+              console.log(`[Wayfindr] Loaded ${domain} index from local cache (${merged.length} sections)`);
+              sendResponse({ status: 'CACHED', count: merged.length });
             } else {
               crawlDomain(url).then(sections => {
-                sendResponse({ status: 'CRAWLED', count: sections.length });
+                const combined = [...sections, ...liveSections.filter(ls => !sections.some(cs => cs.id === ls.id))];
+                sendResponse({ status: 'CRAWLED', count: combined.length });
               }).catch(err => {
                 console.error('[Wayfindr] Crawl failed:', err);
                 sendResponse({ status: 'ERROR', error: String(err) });

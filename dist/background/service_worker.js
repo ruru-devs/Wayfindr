@@ -1,18 +1,35 @@
 (() => {
   // src/engine/sectionizer.ts
-  function extractSectionsFromHtml(htmlContent, pageUrl, pageDocTitle) {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(htmlContent, "text/html");
-    doc.querySelectorAll("script, style, svg, noscript, iframe, nav, footer").forEach((el) => el.remove());
+  function extractSectionsFromDoc(doc, pageUrl, pageDocTitle) {
     const sections = [];
     const candidates = [];
-    doc.querySelectorAll('section, article, div[id], main, [role="region"]').forEach((el) => {
-      candidates.push(el);
+    doc.querySelectorAll('nav a[href], header a[href], [role="navigation"] a[href]').forEach((a) => {
+      const text = (a.textContent || "").trim().replace(/\s+/g, " ");
+      const href = a.getAttribute("href");
+      if (text.length >= 2 && text.length <= 60 && href && !href.startsWith("#") && !href.startsWith("javascript:")) {
+        try {
+          const fullUrl = new URL(href, pageUrl).href;
+          sections.push({
+            id: `menu_${sections.length + 1}`,
+            url: fullUrl,
+            pageTitle: `${pageDocTitle} \u203A Navigation`,
+            title: text,
+            snippet: `Menu link: ${text} on ${pageDocTitle}`,
+            actionLabel: "Explore"
+          });
+        } catch {
+        }
+      }
+    });
+    doc.querySelectorAll('section, article, div[id], main, [role="region"], [role="main"]').forEach((el) => {
+      if (!el.closest("nav") && !["SCRIPT", "STYLE", "NOSCRIPT", "SVG"].includes(el.tagName)) {
+        candidates.push(el);
+      }
     });
     if (candidates.length < 3) {
       doc.querySelectorAll("h1, h2, h3").forEach((h) => {
         const parent = h.parentElement;
-        if (parent && !candidates.includes(parent)) {
+        if (parent && !candidates.includes(parent) && !parent.closest("nav")) {
           candidates.push(parent);
         }
       });
@@ -37,7 +54,7 @@
         } catch {
         }
       }
-      const priceMatch = text.match(/(?:₹|\$|USD|INR|Rs\.?)\s*([\d,]+(?:\.\d+)?)/i);
+      const priceMatch = text.match(/(?:₹|\$|USD|INR|EUR|Rs\.?)\s*([\d,]+(?:\.\d+)?)/i);
       const timingsMatch = text.match(/(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/);
       idx++;
       sections.push({
@@ -85,6 +102,11 @@
     } catch {
     }
     return sections;
+  }
+  function extractSectionsFromHtml(htmlContent, pageUrl, pageDocTitle) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(htmlContent, "text/html");
+    return extractSectionsFromDoc(doc, pageUrl, pageDocTitle);
   }
   function scoreLinkPriority(pathname, search) {
     let score = 50;
@@ -380,21 +402,41 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "PAGE_LOADED") {
       const url = message.url;
+      const liveSections = message.liveSections || [];
       try {
         const domain = new URL(url).hostname;
         if (isDomainAllowed(domain)) {
+          if (liveSections.length > 0) {
+            let currentSite = siteIndices.get(domain);
+            if (!currentSite) {
+              const engine = new ClientBM25Engine();
+              engine.index(liveSections);
+              siteIndices.set(domain, { engine, sections: liveSections, timestamp: Date.now() });
+            } else {
+              const existingIds = new Set(currentSite.sections.map((s) => s.id));
+              const newSections = liveSections.filter((s) => !existingIds.has(s.id));
+              if (newSections.length > 0) {
+                const combined = [...currentSite.sections, ...newSections];
+                currentSite.engine.index(combined);
+                currentSite.sections = combined;
+                siteIndices.set(domain, currentSite);
+              }
+            }
+          }
           if (!siteIndices.has(domain)) {
             chrome.storage.local.get([`wayfindr_${domain}`], (res) => {
               const cached = res ? res[`wayfindr_${domain}`] : null;
               if (cached && Date.now() - cached.timestamp < 24 * 60 * 60 * 1e3) {
                 const engine = new ClientBM25Engine();
-                engine.index(cached.sections);
-                siteIndices.set(domain, { engine, sections: cached.sections, timestamp: cached.timestamp });
-                console.log(`[Wayfindr] Loaded ${domain} index from local cache (${cached.sections.length} sections)`);
-                sendResponse({ status: "CACHED", count: cached.sections.length });
+                const merged = [...cached.sections, ...liveSections.filter((ls) => !cached.sections.some((cs) => cs.id === ls.id))];
+                engine.index(merged);
+                siteIndices.set(domain, { engine, sections: merged, timestamp: cached.timestamp });
+                console.log(`[Wayfindr] Loaded ${domain} index from local cache (${merged.length} sections)`);
+                sendResponse({ status: "CACHED", count: merged.length });
               } else {
                 crawlDomain(url).then((sections) => {
-                  sendResponse({ status: "CRAWLED", count: sections.length });
+                  const combined = [...sections, ...liveSections.filter((ls) => !sections.some((cs) => cs.id === ls.id))];
+                  sendResponse({ status: "CRAWLED", count: combined.length });
                 }).catch((err) => {
                   console.error("[Wayfindr] Crawl failed:", err);
                   sendResponse({ status: "ERROR", error: String(err) });
