@@ -31,6 +31,38 @@
   }
 
   // src/engine/sectionizer.ts
+  function generateDomPath(el) {
+    const parts = [];
+    let curr = el;
+    while (curr && curr.nodeType === 1 && curr.tagName.toLowerCase() !== "body" && curr.tagName.toLowerCase() !== "html") {
+      if (curr.id) {
+        parts.unshift(`#${curr.id}`);
+        break;
+      }
+      const tag = curr.tagName.toLowerCase();
+      const parent = curr.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((c) => c.tagName.toLowerCase() === tag);
+        if (siblings.length > 1) {
+          const index = siblings.indexOf(curr) + 1;
+          parts.unshift(`${tag}:nth-of-type(${index})`);
+        } else {
+          parts.unshift(tag);
+        }
+      } else {
+        parts.unshift(tag);
+      }
+      curr = curr.parentElement;
+    }
+    return parts.join(" > ");
+  }
+  function generateSlug(text) {
+    return text.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50);
+  }
+  function generateTextFragment(text) {
+    const words = text.trim().split(/\s+/).slice(0, 6).join(" ");
+    return words ? `#:~:text=${encodeURIComponent(words)}` : "";
+  }
   function extractSectionsFromDoc(doc, pageUrl, pageDocTitle) {
     const sections = [];
     const candidates = [];
@@ -65,8 +97,24 @@
         }
       });
     }
+    const filteredCandidates = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const a = candidates[i];
+      const children = candidates.filter((b) => a !== b && a.contains(b));
+      if (children.length > 0) {
+        let directText = a.textContent || "";
+        for (const child of children) {
+          directText = directText.replace(child.textContent || "", "");
+        }
+        directText = directText.trim().replace(/\s+/g, " ");
+        if (directText.length < 80) {
+          continue;
+        }
+      }
+      filteredCandidates.push(a);
+    }
     let idx = 0;
-    for (const block of candidates) {
+    for (const block of filteredCandidates) {
       const text = (block.textContent || "").trim().replace(/\s+/g, " ");
       if (text.length < 25) continue;
       const heading = block.querySelector("h1, h2, h3, h4, h5");
@@ -75,7 +123,13 @@
         const strong = block.querySelector("strong, b");
         title = (strong?.textContent || "").trim() || text.split(/\s+/).slice(0, 6).join(" ");
       }
-      const anchorId = block.id || heading?.id || "";
+      const nativeId = block.id || heading?.id || "";
+      const generatedSlug = title ? generateSlug(title) : "";
+      const anchorId = nativeId || generatedSlug || void 0;
+      const hasUsableAnchor = Boolean(nativeId || generatedSlug);
+      const landingConfidence = nativeId ? 1 : generatedSlug ? 0.85 : 0.6;
+      const locator = generateDomPath(block);
+      const textFragment = generateTextFragment(title || text);
       const actionEl = block.querySelector("a, button");
       let actionLabel = (actionEl?.textContent || "").trim();
       let actionUrl = actionEl?.getAttribute("href") || void 0;
@@ -89,10 +143,14 @@
       const timingsMatch = text.match(/(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/);
       idx++;
       sections.push({
-        id: `sec_${idx}_${anchorId || "block"}`,
+        id: `sec_${idx}_${nativeId || generatedSlug || "block"}`,
         url: pageUrl,
         pageTitle: pageDocTitle || "Page",
-        anchorId: anchorId || void 0,
+        anchorId,
+        locator,
+        textFragment,
+        hasUsableAnchor,
+        landingConfidence,
         title: title.slice(0, 100),
         snippet: text.slice(0, 200).replace(/\s+/g, " "),
         actionLabel: actionLabel && actionLabel.length < 30 ? actionLabel : void 0,

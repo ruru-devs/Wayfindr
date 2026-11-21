@@ -2,6 +2,58 @@ import { SectionNode } from './types';
 import { isValidCrawlUrl } from './url_utils';
 
 /**
+ * Generates a stable CSS selector path for an element within the DOM tree.
+ */
+export function generateDomPath(el: Element): string {
+  const parts: string[] = [];
+  let curr: Element | null = el;
+
+  while (curr && curr.nodeType === 1 && curr.tagName.toLowerCase() !== 'body' && curr.tagName.toLowerCase() !== 'html') {
+    if (curr.id) {
+      parts.unshift(`#${curr.id}`);
+      break;
+    }
+    const tag = curr.tagName.toLowerCase();
+    const parent = curr.parentElement;
+    if (parent) {
+      const siblings = Array.from(parent.children).filter(c => c.tagName.toLowerCase() === tag);
+      if (siblings.length > 1) {
+        const index = siblings.indexOf(curr) + 1;
+        parts.unshift(`${tag}:nth-of-type(${index})`);
+      } else {
+        parts.unshift(tag);
+      }
+    } else {
+      parts.unshift(tag);
+    }
+    curr = curr.parentElement;
+  }
+
+  return parts.join(' > ');
+}
+
+/**
+ * Creates clean anchor slug from heading text.
+ */
+export function generateSlug(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 50);
+}
+
+/**
+ * Generates W3C Scroll-to-text-fragment string.
+ */
+export function generateTextFragment(text: string): string {
+  const words = text.trim().split(/\s+/).slice(0, 6).join(' ');
+  return words ? `#:~:text=${encodeURIComponent(words)}` : '';
+}
+
+/**
  * Parses raw HTML string or Document into distinct semantic sections,
  * extracting anchor IDs, action links, prices, and timings.
  */
@@ -48,14 +100,41 @@ export function extractSectionsFromDoc(
   if (candidates.length < 3) {
     doc.querySelectorAll('h1, h2, h3').forEach(h => {
       const parent = h.parentElement;
-      if (parent && !candidates.includes(parent) && !parent.closest('nav')) {
+      if (parent && !candidates.includes(parent as HTMLElement) && !parent.closest('nav')) {
         candidates.push(parent as HTMLElement);
       }
     });
   }
 
+  // 3. Deduplicate nested & overlapping candidates
+  // Hierarchy Rule:
+  // If element A contains candidate B:
+  // Calculate direct text of A by subtracting the text of all child candidates.
+  // If direct text is minimal (< 80 chars), A is an empty/structural container (e.g. <main> or <div id="wrapper">).
+  // Discard A and preserve the specific child candidate(s).
+  // If direct text of A is substantial (>= 80 chars), retain A.
+  const filteredCandidates: HTMLElement[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const a = candidates[i];
+    const children = candidates.filter(b => a !== b && a.contains(b));
+
+    if (children.length > 0) {
+      let directText = (a.textContent || '');
+      for (const child of children) {
+        directText = directText.replace(child.textContent || '', '');
+      }
+      directText = directText.trim().replace(/\s+/g, ' ');
+
+      if (directText.length < 80) {
+        // Discard parent wrapper in favor of more specific children
+        continue;
+      }
+    }
+    filteredCandidates.push(a);
+  }
+
   let idx = 0;
-  for (const block of candidates) {
+  for (const block of filteredCandidates) {
     const text = (block.textContent || '').trim().replace(/\s+/g, ' ');
     if (text.length < 25) continue;
 
@@ -66,7 +145,14 @@ export function extractSectionsFromDoc(
       title = (strong?.textContent || '').trim() || text.split(/\s+/).slice(0, 6).join(' ');
     }
 
-    const anchorId = block.id || heading?.id || '';
+    const nativeId = block.id || heading?.id || '';
+    const generatedSlug = title ? generateSlug(title) : '';
+    const anchorId = nativeId || generatedSlug || undefined;
+
+    const hasUsableAnchor = Boolean(nativeId || generatedSlug);
+    const landingConfidence = nativeId ? 1.0 : (generatedSlug ? 0.85 : 0.6);
+    const locator = generateDomPath(block);
+    const textFragment = generateTextFragment(title || text);
 
     // Action button detection
     const actionEl = block.querySelector('a, button');
@@ -84,10 +170,14 @@ export function extractSectionsFromDoc(
 
     idx++;
     sections.push({
-      id: `sec_${idx}_${anchorId || 'block'}`,
+      id: `sec_${idx}_${nativeId || generatedSlug || 'block'}`,
       url: pageUrl,
       pageTitle: pageDocTitle || 'Page',
-      anchorId: anchorId || undefined,
+      anchorId,
+      locator,
+      textFragment,
+      hasUsableAnchor,
+      landingConfidence,
       title: title.slice(0, 100),
       snippet: text.slice(0, 200).replace(/\s+/g, ' '),
       actionLabel: actionLabel && actionLabel.length < 30 ? actionLabel : undefined,

@@ -14,10 +14,23 @@ function checkAndHighlightTarget() {
   const hash = window.location.hash ? window.location.hash.substring(1) : '';
   if (hash) {
     setTimeout(() => {
-      const el = document.getElementById(hash) || document.querySelector(`[name="${hash}"]`);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.classList.add('wayfindr-pulse-target');
+      let target = document.getElementById(hash) || document.querySelector(`[name="${hash}"]`);
+      if (!target && !hash.startsWith(':~:text=')) {
+        // Fallback: search headings by slug
+        const headings = document.querySelectorAll('h1, h2, h3, h4, h5, strong');
+        for (const h of headings) {
+          const slug = (h.textContent || '').toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-');
+          if (slug && slug.includes(hash.toLowerCase())) {
+            target = h.closest('section, article, div') || h;
+            break;
+          }
+        }
+      }
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.remove('wayfindr-pulse-target');
+        void (target as HTMLElement).offsetWidth;
+        target.classList.add('wayfindr-pulse-target');
       }
     }, 350);
   }
@@ -367,20 +380,47 @@ function renderResults(results: SearchResultItem[]) {
 
     el.addEventListener('click', () => {
       closePalette();
-      if (res.isCurrentPage && res.anchorId) {
-        const target = document.getElementById(res.anchorId);
+      if (res.isCurrentPage) {
+        let target: Element | null = null;
+        if (res.anchorId) {
+          target = document.getElementById(res.anchorId) || document.querySelector(`[name="${res.anchorId}"]`);
+        }
+        if (!target && res.locator) {
+          try {
+            target = document.querySelector(res.locator);
+          } catch {}
+        }
+        if (!target && res.title) {
+          const headings = document.querySelectorAll('h1, h2, h3, h4, h5');
+          for (const h of headings) {
+            if ((h.textContent || '').trim() === res.title) {
+              target = h.closest('section, article, div') || h;
+              break;
+            }
+          }
+        }
         if (target) {
           target.scrollIntoView({ behavior: 'smooth', block: 'center' });
           target.classList.remove('wayfindr-pulse-target');
-          void target.offsetWidth;
+          void (target as HTMLElement).offsetWidth;
           target.classList.add('wayfindr-pulse-target');
           return;
         }
       }
-      if (isSafeNavigationUrl(res.targetUrl)) {
-        window.location.href = res.targetUrl;
+
+      let navUrl = res.targetUrl;
+      if (!navUrl.includes('#')) {
+        if (res.anchorId) {
+          navUrl = `${navUrl}#${res.anchorId}`;
+        } else if (res.textFragment) {
+          navUrl = `${navUrl}${res.textFragment}`;
+        }
+      }
+
+      if (isSafeNavigationUrl(navUrl)) {
+        window.location.href = navUrl;
       } else {
-        console.warn('[Wayfindr] Blocked navigation to unsafe URL scheme:', res.targetUrl);
+        console.warn('[Wayfindr] Blocked navigation to unsafe URL scheme:', navUrl);
       }
     });
 

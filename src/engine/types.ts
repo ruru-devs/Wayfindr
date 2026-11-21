@@ -3,6 +3,10 @@ export interface SectionNode {
   url: string;
   pageTitle: string;
   anchorId?: string;
+  locator?: string;
+  textFragment?: string;
+  hasUsableAnchor?: boolean;
+  landingConfidence?: number;
   title: string;
   snippet: string;
   actionLabel?: string;
