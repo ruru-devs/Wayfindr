@@ -1,0 +1,11 @@
+{
+  "name": "wayfindr-extension",
+  "version": "1.0.0",
+  "description": "Wayfindr: Browser extension for instant intent-driven website navigation",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
