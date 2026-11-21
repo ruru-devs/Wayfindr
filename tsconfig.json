@@ -6,6 +6,8 @@
     "lib": ["ES2020", "DOM"],
     "noImplicitAny": false,
     "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "moduleResolution": "node",
     "outDir": "dist"
   },
   "include": ["src/**/*"]

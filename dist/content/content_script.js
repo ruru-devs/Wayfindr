@@ -501,6 +501,13 @@
         itemTimings.textContent = `\u{1F552} ${res.metadata.timings}`;
         itemMain.appendChild(itemTimings);
       }
+      if (res.whyMatched) {
+        const itemWhy = document.createElement("div");
+        itemWhy.className = "item-why";
+        itemWhy.style.cssText = "font-size: 11px; color: #0284c7; margin-top: 3px; font-weight: 500;";
+        itemWhy.textContent = `\u{1F4A1} ${res.whyMatched}`;
+        itemMain.appendChild(itemWhy);
+      }
       el.appendChild(itemMain);
       const actionBadge = document.createElement("div");
       actionBadge.className = "action-badge";

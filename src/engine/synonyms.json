@@ -1,0 +1,28 @@
+{
+  "synonym_groups": [
+    ["price", "cost", "fee", "fees", "charge", "charges", "pricing", "tariff", "rate", "rates", "paise", "kitna"],
+    ["mri", "magnetic resonance imaging"],
+    ["ct", "computed tomography", "cat scan"],
+    ["heart", "cardiology", "cardiologist", "cardiac", "dil"],
+    ["bone", "orthopedic", "orthopedics", "orthopaedic", "joint", "knee", "spine", "haddi"],
+    ["skin", "dermatology", "dermatologist", "acne", "psoriasis", "eczema", "charm rog"],
+    ["brain", "neurology", "neurologist", "stroke", "epilepsy", "migraine", "nerve"],
+    ["blood", "pathology", "cbc", "fbs", "lipid", "lab", "laboratory", "sample"],
+    ["emergency", "trauma", "ambulance", "urgent", "24/7", "sos"],
+    ["hours", "timings", "timing", "schedule", "time", "visiting", "visit"],
+    ["insurance", "mediclaim", "tpa", "cashless", "claim", "ayushman", "pmjay", "cghs"],
+    ["doctor", "physician", "specialist", "surgeon", "consultant"],
+    ["appointment", "book", "booking", "register", "registration", "consultation", "opd"],
+    ["headphones", "earbuds", "earphones", "headset", "audio", "sound", "acoustic"],
+    ["battery", "playback", "charging", "charge", "backup", "runtime"],
+    ["waterproof", "sweatproof", "water resistant", "ipx7", "paani"],
+    ["noise cancelling", "anc", "ambient", "transparency", "attenuation"],
+    ["return", "refund", "returns", "money-back", "paise wapas", "cancel", "cancellation"],
+    ["warranty", "guarantee", "claim", "hardware defect", "replacement"],
+    ["shipping", "delivery", "dispatch", "overnight", "express", "courier", "timeline"],
+    ["auth", "authentication", "api key", "secret", "token", "bearer", "credentials", "hmac"],
+    ["rate limit", "429", "too many requests", "throttle", "quota", "backoff"],
+    ["anchor", "locator", "fragment", "text fragment", "deep link", "highlight"],
+    ["quickstart", "getting started", "installation", "install", "sdk", "setup"]
+  ]
+}

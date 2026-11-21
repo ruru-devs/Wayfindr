@@ -21,6 +21,7 @@ export interface SectionNode {
 export interface SearchResultItem extends SectionNode {
   score: number;
   matchType: 'exact_keyword' | 'semantic' | 'title';
+  whyMatched?: string;
   targetUrl: string;
   isCurrentPage: boolean;
 }

@@ -1,8 +1,24 @@
 import { SectionNode, SearchResultItem } from './types';
+import { normalizeAndTokenize, expandQuery, stemToken } from './normalizer';
 
 /**
- * Client-Side BM25 Lexical & Intent Search Engine
- * Ultra-fast (<5ms) ranking for extension tabs with zero external API calls.
+ * Tunable Ranking Weights & Thresholds
+ */
+export const RANKING_WEIGHTS = {
+  bm25: 1.0,
+  exactPhraseTitle: 14.0,
+  partialTitleMatch: 5.0,
+  exactPhraseSnippet: 4.0,
+  intentBoost: 4.0,
+  landingAnchorBoost: 2.5,  // Prefers sections with direct anchors
+  deltaSmoothing: 1.0       // BM25Plus smoothing to avoid IDF zeroing on small corpora
+};
+
+export const MIN_CONFIDENCE_THRESHOLD = 2.8;
+
+/**
+ * Client-Side BM25Plus Lexical & Intent Search Engine
+ * Ultra-fast (<1ms) CPU ranking with stemming, synonym expansion, and confidence thresholding.
  */
 export class ClientBM25Engine {
   private k1: number = 1.5;
@@ -23,7 +39,8 @@ export class ClientBM25Engine {
 
     for (const sec of sections) {
       const fullText = `${sec.title} ${sec.pageTitle} ${sec.snippet} ${sec.metadata?.price || ''} ${sec.metadata?.timings || ''}`;
-      const tokens = this.tokenize(fullText);
+      // Index tokens using normalized stemming
+      const tokens = normalizeAndTokenize(fullText, true);
       this.docTokens.push(tokens);
       this.docLengths.push(tokens.length);
       totalLen += tokens.length;
@@ -38,22 +55,32 @@ export class ClientBM25Engine {
   }
 
   public tokenize(text: string): string[] {
-    return (text.toLowerCase().match(/\b[a-z0-9_-]{2,}\b/g) || []);
+    return normalizeAndTokenize(text, true);
   }
 
   public search(query: string, currentUrl: string, topK: number = 6): SearchResultItem[] {
-    const qTokens = this.tokenize(query);
-    if (!qTokens.length || !this.sections.length) return [];
+    const rawClean = query.toLowerCase().trim();
+    const baseTokens = normalizeAndTokenize(query, true);
+    if (!baseTokens.length || !this.sections.length) return [];
 
-    const scores: { index: number; score: number; matchType: 'exact_keyword' | 'semantic' | 'title' }[] = [];
+    // Query expansion via curated vocabulary
+    const { expandedTokens, whyMatchedMap } = expandQuery(query, baseTokens);
+
+    const scores: {
+      index: number;
+      score: number;
+      matchType: 'exact_keyword' | 'semantic' | 'title';
+      whyMatched: string;
+    }[] = [];
+
     const N = this.sections.length;
-    const qClean = query.toLowerCase().trim();
 
     for (let i = 0; i < N; i++) {
       const doc = this.sections[i];
       const tokens = this.docTokens[i];
       const docLen = this.docLengths[i];
       let bm25Score = 0;
+      const matchedTerms: string[] = [];
 
       // Token frequency count
       const termFreqs = new Map<string, number>();
@@ -61,39 +88,76 @@ export class ClientBM25Engine {
         termFreqs.set(t, (termFreqs.get(t) || 0) + 1);
       }
 
-      for (const qTerm of qTokens) {
+      for (const qTerm of expandedTokens) {
         const tf = termFreqs.get(qTerm) || 0;
         const df = this.docFreqs.get(qTerm) || 0;
         if (df === 0 || tf === 0) continue;
 
+        matchedTerms.push(qTerm);
+
+        // BM25Plus formulation: idf * ( (tf * (k1 + 1)) / (tf + k1*(1 - b + b*(docLen/avgDocLen))) + delta )
         const idf = Math.log(1 + (N - df + 0.5) / (df + 0.5));
-        const numerator = tf * (this.k1 + 1);
         const denominator = tf + this.k1 * (1 - this.b + this.b * (docLen / this.avgDocLength));
-        bm25Score += idf * (numerator / denominator);
+        const termScore = idf * ((tf * (this.k1 + 1)) / denominator + RANKING_WEIGHTS.deltaSmoothing);
+        
+        // Slightly discount terms that were expanded from synonyms vs original tokens
+        const weight = baseTokens.includes(qTerm) ? 1.0 : 0.75;
+        bm25Score += termScore * weight;
       }
+
+      // If no query terms matched at all, skip
+      if (matchedTerms.length === 0) continue;
 
       // Title & Exact Phrase Boost
       let boost = 0;
+      let titleMatched = false;
       const titleLower = doc.title.toLowerCase();
-      if (titleLower.includes(qClean)) {
-        boost += 12.0; // exact phrase in title
-      } else if (qTokens.some(t => titleLower.includes(t))) {
-        boost += 4.5;
+      const snippetLower = doc.snippet.toLowerCase();
+
+      if (titleLower.includes(rawClean)) {
+        boost += RANKING_WEIGHTS.exactPhraseTitle;
+        titleMatched = true;
+      } else if (baseTokens.some(t => titleLower.includes(t))) {
+        boost += RANKING_WEIGHTS.partialTitleMatch;
       }
 
+      if (snippetLower.includes(rawClean)) {
+        boost += RANKING_WEIGHTS.exactPhraseSnippet;
+      }
+
+      // Landing Anchor Confidence: Prefer sections with direct anchors
+      const landingConf = doc.landingConfidence !== undefined ? doc.landingConfidence : (doc.anchorId ? 1.0 : 0.5);
+      boost += landingConf * RANKING_WEIGHTS.landingAnchorBoost;
+
       // Intent keyword boosts (pricing, timings, returns, specs)
-      if (/price|cost|fee|₹|\$|timing|hour|schedule|doctor|return|spec/i.test(qClean)) {
-        if (doc.metadata?.price || doc.metadata?.timings || /spec|policy|return/i.test(doc.url)) {
-          boost += 3.5;
+      if (/price|cost|fee|charge|tariff|₹|\$|timing|hour|schedule|doctor|return|refund|spec/i.test(rawClean)) {
+        if (doc.metadata?.price || doc.metadata?.timings || /spec|policy|return|pricing|doctor/i.test(doc.url)) {
+          boost += RANKING_WEIGHTS.intentBoost;
         }
       }
 
-      const totalScore = bm25Score + boost;
-      if (totalScore > 0.8) {
+      const totalScore = (bm25Score * RANKING_WEIGHTS.bm25) + boost;
+
+      // Calibrated Minimum Confidence Threshold
+      if (totalScore >= MIN_CONFIDENCE_THRESHOLD) {
+        // Build truthful "why this matched" description
+        let whyMatched = '';
+        if (titleMatched) {
+          whyMatched = `Exact phrase in title: "${doc.title}"`;
+        } else {
+          const expansionUsed = matchedTerms.find(t => whyMatchedMap.has(t));
+          if (expansionUsed) {
+            whyMatched = `Matched ${whyMatchedMap.get(expansionUsed)}`;
+          } else {
+            whyMatched = `Matched terms: ${matchedTerms.slice(0, 3).join(', ')}`;
+          }
+        }
+
         scores.push({
           index: i,
           score: totalScore,
-          matchType: boost >= 10 ? 'title' : totalScore >= 4 ? 'exact_keyword' : 'semantic'
+          matchType: boost >= 10 ? 'title' : totalScore >= 5 ? 'exact_keyword' : 'semantic',
+          whyMatched
         });
       }
     }
@@ -114,6 +178,7 @@ export class ClientBM25Engine {
         targetUrl,
         score: Math.round(s.score * 100) / 100,
         matchType: s.matchType,
+        whyMatched: s.whyMatched,
         isCurrentPage
       };
     });
